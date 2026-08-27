@@ -1,0 +1,6 @@
+{
+  "name": "LocalLLM",
+  "description": "Local LLM inference app for Android powered by llama.cpp and GGUF models.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
