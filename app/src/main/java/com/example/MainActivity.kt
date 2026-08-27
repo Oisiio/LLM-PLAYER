@@ -24,6 +24,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Check
+import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.outlined.Memory
 import androidx.compose.material3.Card
@@ -50,12 +51,31 @@ import androidx.compose.ui.unit.dp
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
+  companion object {
+    init {
+      try {
+        System.loadLibrary("localllm_native")
+      } catch (e: UnsatisfiedLinkError) {
+        e.printStackTrace()
+      }
+    }
+  }
+
+  private external fun stringFromJNI(): String
+
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
     enableEdgeToEdge()
+
+    val nativeMessage = try {
+      stringFromJNI()
+    } catch (t: Throwable) {
+      "Native Load Error: ${t.message}"
+    }
+
     setContent {
       MyApplicationTheme {
-        LocalLLMApp()
+        LocalLLMApp(nativeMessage = nativeMessage)
       }
     }
   }
@@ -63,7 +83,7 @@ class MainActivity : ComponentActivity() {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LocalLLMApp() {
+fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
   Scaffold(
     modifier = Modifier.fillMaxSize(),
     containerColor = MaterialTheme.colorScheme.background,
@@ -140,7 +160,7 @@ fun LocalLLMApp() {
           Spacer(modifier = Modifier.height(20.dp))
 
           Text(
-            text = "Build Test",
+            text = "Phase 2: JNI Native Communication",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -150,12 +170,44 @@ fun LocalLLMApp() {
           Spacer(modifier = Modifier.height(4.dp))
 
           Text(
-            text = "Application Status: Validated",
+            text = "Native Status: Validated",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
             modifier = Modifier.testTag("phase_status_label")
           )
+
+          Spacer(modifier = Modifier.height(16.dp))
+
+          // Native JNI Message Display
+          Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier
+              .fillMaxWidth()
+              .testTag("native_message_container")
+          ) {
+            Column(
+              modifier = Modifier.padding(16.dp),
+              horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+              Text(
+                text = "C++ NATIVE OUTPUT",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+              )
+              Spacer(modifier = Modifier.height(6.dp))
+              Text(
+                text = nativeMessage,
+                style = MaterialTheme.typography.titleMedium,
+                fontWeight = FontWeight.SemiBold,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.testTag("native_output_text")
+              )
+            }
+          }
 
           Spacer(modifier = Modifier.height(16.dp))
 
@@ -166,7 +218,7 @@ fun LocalLLMApp() {
             modifier = Modifier.testTag("status_chip")
           ) {
             Text(
-              text = "PHASE 1 ACTIVE",
+              text = "PHASE 2 ACTIVE (NDK + JNI)",
               style = MaterialTheme.typography.labelSmall,
               fontWeight = FontWeight.Bold,
               color = MaterialTheme.colorScheme.onPrimaryContainer,

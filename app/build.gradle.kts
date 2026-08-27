@@ -6,6 +6,7 @@ plugins {
 android {
   namespace = "com.example"
   compileSdk = 36
+  ndkVersion = "26.1.10909125"
 
   defaultConfig {
     applicationId = "com.aistudio.localllm.bxktzr"
@@ -15,6 +16,17 @@ android {
     versionName = "1.0"
 
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+    ndk {
+      abiFilters.add("arm64-v8a")
+    }
+  }
+
+  externalNativeBuild {
+    cmake {
+      path = file("src/main/cpp/CMakeLists.txt")
+      version = "3.22.1"
+    }
   }
 
   buildTypes {
