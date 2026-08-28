@@ -153,9 +153,8 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
     }
 
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
-    const float * logits = llama_get_logits(g_context);
-    if (vocab == nullptr || logits == nullptr) {
-        return env->NewStringUTF("ERROR: logits are unavailable");
+    if (vocab == nullptr) {
+        return env->NewStringUTF("ERROR: vocab is unavailable");
     }
 
     const int32_t vocab_size = llama_vocab_n_tokens(vocab);
@@ -163,25 +162,69 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
         return env->NewStringUTF("ERROR: invalid vocabulary size");
     }
 
-    int32_t best_token = 0;
-    float best_logit = logits[0];
-    for (int32_t i = 1; i < vocab_size; ++i) {
-        if (logits[i] > best_logit) {
-            best_logit = logits[i];
-            best_token = i;
+    constexpr int32_t kMaxGenTokens = 20;
+    constexpr int32_t kMaxContextTokens = 512;
+    const llama_token eos_token = llama_vocab_eos(vocab);
+
+    std::string generated_text;
+    int32_t generated_count = 0;
+
+    for (int32_t i = 0; i < kMaxGenTokens; ++i) {
+        if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) {
+            break;
+        }
+
+        const float * logits = llama_get_logits(g_context);
+        if (logits == nullptr) {
+            return env->NewStringUTF("ERROR: logits are unavailable");
+        }
+
+        int32_t best_token = 0;
+        float best_logit = logits[0];
+        for (int32_t v = 1; v < vocab_size; ++v) {
+            if (logits[v] > best_logit) {
+                best_logit = logits[v];
+                best_token = v;
+            }
+        }
+
+        const llama_token current_token = static_cast<llama_token>(best_token);
+        if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
+            break;
+        }
+
+        char token_text[256] = {};
+        const int32_t token_length = llama_token_to_piece(
+            vocab,
+            current_token,
+            token_text,
+            static_cast<int32_t>(sizeof(token_text)),
+            0,
+            true
+        );
+        if (token_length > 0) {
+            generated_text.append(token_text, static_cast<size_t>(token_length));
+        }
+
+        generated_count++;
+        if (generated_count >= kMaxGenTokens) {
+            break;
+        }
+
+        llama_token next_token = current_token;
+        llama_batch token_batch = llama_batch_get_one(&next_token, 1);
+        const int32_t next_decode = llama_decode(g_context, token_batch);
+        if (next_decode != 0) {
+            break;
         }
     }
 
-    char token_text[256] = {};
-    const int32_t token_length = llama_token_to_piece(vocab, best_token, token_text, static_cast<int32_t>(sizeof(token_text)), 0, true);
-    if (token_length < 0) {
-        return env->NewStringUTF("ERROR: llama_token_to_piece failed");
-    }
+    const std::string result = "SUCCESS: multi-token generation completed\n"
+        "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
+        "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
+        "GENERATED TEXT: " + generated_text;
 
-    const std::string result = "SUCCESS: inference step completed\nTOKEN COUNT: " + std::to_string(tokens.size()) +
-        "\nBEST TOKEN ID: " + std::to_string(best_token) +
-        "\nBEST TOKEN PIECE: " + std::string(token_text, static_cast<size_t>(token_length));
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "First inference step completed");
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Multi-token generation completed: %d tokens", generated_count);
     return env->NewStringUTF(result.c_str());
 }
 
