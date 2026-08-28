@@ -231,6 +231,23 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
     return env->NewStringUTF(result.c_str());
 }
 
+// Phase 4-A: verify that a user-supplied prompt crosses the JNI boundary.
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, jstring prompt) {
+    if (prompt == nullptr) {
+        return env->NewStringUTF("ERROR: prompt is null");
+    }
+
+    const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
+    if (prompt_chars == nullptr) {
+        return env->NewStringUTF("ERROR: failed to read prompt");
+    }
+
+    const std::string result = std::string("SUCCESS: JNI prompt received\nPROMPT: ") + prompt_chars;
+    env->ReleaseStringUTFChars(prompt, prompt_chars);
+    return env->NewStringUTF(result.c_str());
+}
+
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_MainActivity_nativeUnloadModel(JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
