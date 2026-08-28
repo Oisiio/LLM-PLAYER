@@ -38,11 +38,12 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -73,12 +74,15 @@ class MainActivity : ComponentActivity() {
   private external fun stringFromJNI(): String
   private external fun nativeLoadModel(modelPath: String): String
   private external fun nativeRunTestInference(): String
+  private external fun nativeEchoPrompt(prompt: String): String
   private external fun nativeUnloadModel()
   private external fun nativeIsModelLoaded(): Boolean
 
   private var modelStatus by mutableStateOf("モデル未ロード")
   private var selectedModelName by mutableStateOf("GGUFモデルを選択してください")
   private var inferenceStatus by mutableStateOf("推論テスト未実行")
+  private var promptText by mutableStateOf("")
+  private var promptStatus by mutableStateOf("Prompt未送信")
   private var isLoading by mutableStateOf(false)
 
   private val openModelLauncher = registerForActivityResult(
@@ -92,6 +96,7 @@ class MainActivity : ComponentActivity() {
     selectedModelName = uri.lastPathSegment ?: "選択したモデル"
     modelStatus = "モデルをアプリ内部へコピー中..."
     inferenceStatus = "推論テスト未実行"
+    promptStatus = "Prompt未送信"
     isLoading = true
 
     lifecycleScope.launch {
@@ -118,13 +123,24 @@ class MainActivity : ComponentActivity() {
           modelStatus = modelStatus,
           selectedModelName = selectedModelName,
           inferenceStatus = inferenceStatus,
+          promptText = promptText,
+          promptStatus = promptStatus,
           isLoading = isLoading,
+          onPromptChange = { promptText = it },
           onSelectModel = { openModelLauncher.launch(arrayOf("application/octet-stream", "application/*")) },
           onRunInference = {
             isLoading = true
             lifecycleScope.launch {
               val result = runInference()
               inferenceStatus = result
+              isLoading = false
+            }
+          },
+          onSendPrompt = {
+            isLoading = true
+            lifecycleScope.launch {
+              val result = sendPrompt(promptText)
+              promptStatus = result
               isLoading = false
             }
           }
@@ -169,6 +185,13 @@ class MainActivity : ComponentActivity() {
     nativeRunTestInference()
   }
 
+  private suspend fun sendPrompt(prompt: String): String = withContext(Dispatchers.Default) {
+    if (prompt.isBlank()) {
+      return@withContext "ERROR: Promptが空です"
+    }
+    nativeEchoPrompt(prompt)
+  }
+
   override fun onDestroy() {
     try {
       nativeUnloadModel()
@@ -186,9 +209,13 @@ fun LocalLLMApp(
   modelStatus: String = "モデル未ロード",
   selectedModelName: String = "GGUFモデルを選択してください",
   inferenceStatus: String = "推論テスト未実行",
+  promptText: String = "",
+  promptStatus: String = "Prompt未送信",
   isLoading: Boolean = false,
+  onPromptChange: (String) -> Unit = {},
   onSelectModel: () -> Unit = {},
-  onRunInference: () -> Unit = {}
+  onRunInference: () -> Unit = {},
+  onSendPrompt: () -> Unit = {}
 ) {
   Scaffold(
     modifier = Modifier.fillMaxSize(),
@@ -253,7 +280,7 @@ fun LocalLLMApp(
 
           Spacer(modifier = Modifier.height(20.dp))
           Text(
-            text = "Phase 3-C: Minimal Inference",
+            text = "Phase 4-A: JNI Prompt Bridge",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -261,7 +288,7 @@ fun LocalLLMApp(
           )
           Spacer(modifier = Modifier.height(4.dp))
           Text(
-            text = "JNI + llama.cpp tokenizer / decode",
+            text = "Android input → JNI → C++",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -284,13 +311,58 @@ fun LocalLLMApp(
             color = MaterialTheme.colorScheme.onSurfaceVariant
           )
 
+          Spacer(modifier = Modifier.height(16.dp))
+          TextField(
+            value = promptText,
+            onValueChange = onPromptChange,
+            enabled = !isLoading,
+            modifier = Modifier.fillMaxWidth().testTag("prompt_input"),
+            label = { Text("Prompt") },
+            placeholder = { Text("LLMに送る文章を入力") },
+            minLines = 3,
+            maxLines = 6
+          )
+
           Spacer(modifier = Modifier.height(12.dp))
+          Button(
+            onClick = onSendPrompt,
+            enabled = !isLoading && promptText.isNotBlank(),
+            modifier = Modifier.fillMaxWidth().testTag("send_prompt_button")
+          ) {
+            Text("PromptをJNIへ送信")
+          }
+
+          Spacer(modifier = Modifier.height(12.dp))
+          Surface(
+            color = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(12.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
+            modifier = Modifier.fillMaxWidth().testTag("prompt_status_container")
+          ) {
+            Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+              Text(
+                text = "JNI PROMPT BRIDGE",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+              )
+              Spacer(modifier = Modifier.height(6.dp))
+              Text(
+                text = promptStatus,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.testTag("prompt_output_text")
+              )
+            }
+          }
+
+          Spacer(modifier = Modifier.height(16.dp))
           Button(
             onClick = onRunInference,
             enabled = !isLoading && modelStatus.startsWith("SUCCESS:"),
             modifier = Modifier.fillMaxWidth().testTag("inference_button")
           ) {
-            Text("最小推論テストを実行")
+            Text("既存Phase 3-C推論テスト")
           }
 
           Spacer(modifier = Modifier.height(12.dp))
@@ -345,7 +417,7 @@ fun LocalLLMApp(
             modifier = Modifier.testTag("status_chip")
           ) {
             Text(
-              text = "PHASE 3-C ACTIVE",
+              text = "PHASE 4-A ACTIVE",
               style = MaterialTheme.typography.labelSmall,
               fontWeight = FontWeight.Bold,
               color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -386,11 +458,6 @@ private fun SleekInfoCard(icon: ImageVector, category: String, value: String) {
       }
     }
   }
-}
-
-@Composable
-fun Greeting(name: String, modifier: Modifier = Modifier) {
-  Text(text = "Hello $name!", modifier = modifier)
 }
 
 @Preview(showBackground = true)
