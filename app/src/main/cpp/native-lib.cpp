@@ -12,8 +12,13 @@ constexpr char kLogTag[] = "LLM-PLAYER";
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
+llama_context * g_context = nullptr;
 
 void unload_model_locked() {
+    if (g_context != nullptr) {
+        llama_free(g_context);
+        g_context = nullptr;
+    }
     if (g_model != nullptr) {
         llama_model_free(g_model);
         g_model = nullptr;
@@ -66,15 +71,26 @@ Java_com_example_MainActivity_nativeLoadModel(
 
     g_model = llama_model_load_from_file(path, model_params);
 
-    env->ReleaseStringUTFChars(model_path, path);
-
     if (g_model == nullptr) {
+        env->ReleaseStringUTFChars(model_path, path);
         __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Failed to load GGUF model");
         return env->NewStringUTF("ERROR: llama_model_load_from_file failed");
     }
 
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "GGUF model loaded successfully");
-    return env->NewStringUTF("SUCCESS: GGUF model loaded");
+    llama_context_params context_params = llama_context_default_params();
+    g_context = llama_init_from_model(g_model, context_params);
+
+    env->ReleaseStringUTFChars(model_path, path);
+
+    if (g_context == nullptr) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Model loaded, but context creation failed");
+        llama_model_free(g_model);
+        g_model = nullptr;
+        return env->NewStringUTF("ERROR: model loaded, but llama_init_from_model failed");
+    }
+
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "GGUF model and context loaded successfully");
+    return env->NewStringUTF("SUCCESS: GGUF model + context loaded");
 }
 
 extern "C" JNIEXPORT void JNICALL
@@ -83,7 +99,7 @@ Java_com_example_MainActivity_nativeUnloadModel(
     jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     unload_model_locked();
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "GGUF model unloaded");
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "GGUF model and context unloaded");
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
@@ -91,5 +107,5 @@ Java_com_example_MainActivity_nativeIsModelLoaded(
     JNIEnv* /* env */,
     jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
-    return g_model != nullptr ? JNI_TRUE : JNI_FALSE;
+    return (g_model != nullptr && g_context != nullptr) ? JNI_TRUE : JNI_FALSE;
 }
