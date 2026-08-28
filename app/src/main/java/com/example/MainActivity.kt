@@ -1,8 +1,10 @@
 package com.example
 
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -24,9 +26,9 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AccountTree
 import androidx.compose.material.icons.filled.Check
-import androidx.compose.material.icons.filled.Code
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.outlined.Memory
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CenterAlignedTopAppBar
@@ -37,6 +39,9 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -45,10 +50,14 @@ import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.lifecycleScope
 import com.example.ui.theme.MyApplicationTheme
+import java.io.File
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class MainActivity : ComponentActivity() {
   companion object {
@@ -62,6 +71,29 @@ class MainActivity : ComponentActivity() {
   }
 
   private external fun stringFromJNI(): String
+  private external fun nativeLoadModel(modelPath: String): String
+  private external fun nativeUnloadModel()
+  private external fun nativeIsModelLoaded(): Boolean
+
+  private var modelStatus by mutableStateOf("モデル未ロード")
+  private var selectedModelName by mutableStateOf("GGUFモデルを選択してください")
+
+  private val openModelLauncher = registerForActivityResult(
+    ActivityResultContracts.OpenDocument()
+  ) { uri: Uri? ->
+    if (uri == null) {
+      modelStatus = "モデル選択をキャンセルしました"
+      return@registerForActivityResult
+    }
+
+    selectedModelName = uri.lastPathSegment ?: "選択したモデル"
+    modelStatus = "モデルをアプリ内部へコピー中..."
+
+    lifecycleScope.launch {
+      val result = copyAndLoadModel(uri)
+      modelStatus = result
+    }
+  }
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState)
@@ -75,15 +107,63 @@ class MainActivity : ComponentActivity() {
 
     setContent {
       MyApplicationTheme {
-        LocalLLMApp(nativeMessage = nativeMessage)
+        LocalLLMApp(
+          nativeMessage = nativeMessage,
+          modelStatus = modelStatus,
+          selectedModelName = selectedModelName,
+          onSelectModel = { openModelLauncher.launch(arrayOf("application/octet-stream", "application/*")) }
+        )
       }
     }
+  }
+
+  private suspend fun copyAndLoadModel(uri: Uri): String = withContext(Dispatchers.IO) {
+    try {
+      val modelsDir = File(filesDir, "models").apply { mkdirs() }
+      val finalFile = File(modelsDir, "model.gguf")
+      val tempFile = File(modelsDir, "model.gguf.partial")
+
+      contentResolver.openInputStream(uri)?.use { input ->
+        tempFile.outputStream().use { output ->
+          input.copyTo(output, DEFAULT_BUFFER_SIZE)
+        }
+      } ?: return@withContext "ERROR: モデルファイルを開けませんでした"
+
+      if (!tempFile.renameTo(finalFile)) {
+        tempFile.delete()
+        return@withContext "ERROR: モデルファイルの確定に失敗しました"
+      }
+
+      val sizeBytes = finalFile.length()
+      if (sizeBytes <= 0L) {
+        finalFile.delete()
+        return@withContext "ERROR: 空のモデルファイルです"
+      }
+
+      "${nativeLoadModel(finalFile.absolutePath)}\nPATH: ${finalFile.absolutePath}\nSIZE: ${sizeBytes} bytes"
+    } catch (t: Throwable) {
+      "ERROR: ${t.message ?: t.javaClass.simpleName}"
+    }
+  }
+
+  override fun onDestroy() {
+    try {
+      nativeUnloadModel()
+    } catch (t: Throwable) {
+      t.printStackTrace()
+    }
+    super.onDestroy()
   }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
+fun LocalLLMApp(
+  nativeMessage: String = "Hello from native C++",
+  modelStatus: String = "モデル未ロード",
+  selectedModelName: String = "GGUFモデルを選択してください",
+  onSelectModel: () -> Unit = {}
+) {
   Scaffold(
     modifier = Modifier.fillMaxSize(),
     containerColor = MaterialTheme.colorScheme.background,
@@ -119,9 +199,8 @@ fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
         .verticalScroll(rememberScrollState())
         .padding(horizontal = 24.dp, vertical = 16.dp),
       horizontalAlignment = Alignment.CenterHorizontally,
-      verticalArrangement = Arrangement.spacedBy(20.dp, Alignment.CenterVertically)
+      verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-      // Main Status Card (Sleek Hero)
       Card(
         modifier = Modifier
           .fillMaxWidth()
@@ -136,10 +215,9 @@ fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
         Column(
           modifier = Modifier
             .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 32.dp),
+            .padding(horizontal = 24.dp, vertical = 28.dp),
           horizontalAlignment = Alignment.CenterHorizontally
         ) {
-          // Circular Badge
           Box(
             modifier = Modifier
               .size(76.dp)
@@ -160,7 +238,7 @@ fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
           Spacer(modifier = Modifier.height(20.dp))
 
           Text(
-            text = "Phase 2: JNI Native Communication",
+            text = "Phase 3-B-1: GGUF Model Loading",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -170,7 +248,7 @@ fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
           Spacer(modifier = Modifier.height(4.dp))
 
           Text(
-            text = "Native Status: Validated",
+            text = "JNI + llama.cpp model loader",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -179,7 +257,23 @@ fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
 
           Spacer(modifier = Modifier.height(16.dp))
 
-          // Native JNI Message Display
+          Button(
+            onClick = onSelectModel,
+            modifier = Modifier.fillMaxWidth().testTag("select_model_button")
+          ) {
+            Text("GGUFモデルを選択")
+          }
+
+          Spacer(modifier = Modifier.height(12.dp))
+
+          Text(
+            text = selectedModelName,
+            style = MaterialTheme.typography.bodySmall,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+          )
+
+          Spacer(modifier = Modifier.height(12.dp))
+
           Surface(
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(12.dp),
@@ -200,25 +294,30 @@ fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
               )
               Spacer(modifier = Modifier.height(6.dp))
               Text(
-                text = nativeMessage,
-                style = MaterialTheme.typography.titleMedium,
+                text = modelStatus,
+                style = MaterialTheme.typography.bodyMedium,
                 fontWeight = FontWeight.SemiBold,
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.testTag("native_output_text")
+              )
+              Spacer(modifier = Modifier.height(8.dp))
+              Text(
+                text = nativeMessage,
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
               )
             }
           }
 
           Spacer(modifier = Modifier.height(16.dp))
 
-          // Phase Pill Badge
           Surface(
             color = MaterialTheme.colorScheme.primaryContainer,
             shape = RoundedCornerShape(50),
             modifier = Modifier.testTag("status_chip")
           ) {
             Text(
-              text = "PHASE 2 ACTIVE (NDK + JNI)",
+              text = "PHASE 3-B-1 ACTIVE",
               style = MaterialTheme.typography.labelSmall,
               fontWeight = FontWeight.Bold,
               color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -228,7 +327,6 @@ fun LocalLLMApp(nativeMessage: String = "Hello from native C++") {
         }
       }
 
-      // System Spec Cards (Sleek List Items)
       Column(
         modifier = Modifier.fillMaxWidth(),
         verticalArrangement = Arrangement.spacedBy(12.dp)
@@ -304,7 +402,6 @@ private fun SleekInfoCard(
   }
 }
 
-// Retained for backward test compatibility
 @Composable
 fun Greeting(name: String, modifier: Modifier = Modifier) {
   Text(text = "Hello $name!", modifier = modifier)
@@ -317,4 +414,3 @@ fun LocalLLMAppPreview() {
     LocalLLMApp()
   }
 }
-
