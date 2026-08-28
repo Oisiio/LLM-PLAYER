@@ -202,6 +202,9 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
             0,
             true
         );
+        if (token_length < 0) {
+            return env->NewStringUTF("ERROR: llama_token_to_piece failed");
+        }
         if (token_length > 0) {
             generated_text.append(token_text, static_cast<size_t>(token_length));
         }
@@ -215,7 +218,7 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
         llama_batch token_batch = llama_batch_get_one(&next_token, 1);
         const int32_t next_decode = llama_decode(g_context, token_batch);
         if (next_decode != 0) {
-            break;
+            return env->NewStringUTF("ERROR: llama_decode failed");
         }
     }
 
