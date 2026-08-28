@@ -72,11 +72,14 @@ class MainActivity : ComponentActivity() {
 
   private external fun stringFromJNI(): String
   private external fun nativeLoadModel(modelPath: String): String
+  private external fun nativeRunTestInference(): String
   private external fun nativeUnloadModel()
   private external fun nativeIsModelLoaded(): Boolean
 
   private var modelStatus by mutableStateOf("モデル未ロード")
   private var selectedModelName by mutableStateOf("GGUFモデルを選択してください")
+  private var inferenceStatus by mutableStateOf("推論テスト未実行")
+  private var isLoading by mutableStateOf(false)
 
   private val openModelLauncher = registerForActivityResult(
     ActivityResultContracts.OpenDocument()
@@ -88,10 +91,13 @@ class MainActivity : ComponentActivity() {
 
     selectedModelName = uri.lastPathSegment ?: "選択したモデル"
     modelStatus = "モデルをアプリ内部へコピー中..."
+    inferenceStatus = "推論テスト未実行"
+    isLoading = true
 
     lifecycleScope.launch {
       val result = copyAndLoadModel(uri)
       modelStatus = result
+      isLoading = false
     }
   }
 
@@ -111,7 +117,17 @@ class MainActivity : ComponentActivity() {
           nativeMessage = nativeMessage,
           modelStatus = modelStatus,
           selectedModelName = selectedModelName,
-          onSelectModel = { openModelLauncher.launch(arrayOf("application/octet-stream", "application/*")) }
+          inferenceStatus = inferenceStatus,
+          isLoading = isLoading,
+          onSelectModel = { openModelLauncher.launch(arrayOf("application/octet-stream", "application/*")) },
+          onRunInference = {
+            isLoading = true
+            lifecycleScope.launch {
+              val result = runInference()
+              inferenceStatus = result
+              isLoading = false
+            }
+          }
         )
       }
     }
@@ -146,6 +162,13 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  private suspend fun runInference(): String = withContext(Dispatchers.Default) {
+    if (!nativeIsModelLoaded()) {
+      return@withContext "ERROR: 先にGGUFモデルをロードしてください"
+    }
+    nativeRunTestInference()
+  }
+
   override fun onDestroy() {
     try {
       nativeUnloadModel()
@@ -162,7 +185,10 @@ fun LocalLLMApp(
   nativeMessage: String = "Hello from native C++",
   modelStatus: String = "モデル未ロード",
   selectedModelName: String = "GGUFモデルを選択してください",
-  onSelectModel: () -> Unit = {}
+  inferenceStatus: String = "推論テスト未実行",
+  isLoading: Boolean = false,
+  onSelectModel: () -> Unit = {},
+  onRunInference: () -> Unit = {}
 ) {
   Scaffold(
     modifier = Modifier.fillMaxSize(),
@@ -202,29 +228,19 @@ fun LocalLLMApp(
       verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
       Card(
-        modifier = Modifier
-          .fillMaxWidth()
-          .testTag("build_test_card"),
+        modifier = Modifier.fillMaxWidth().testTag("build_test_card"),
         shape = RoundedCornerShape(32.dp),
-        colors = CardDefaults.cardColors(
-          containerColor = MaterialTheme.colorScheme.surfaceVariant
-        ),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primaryContainer),
         elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
       ) {
         Column(
-          modifier = Modifier
-            .fillMaxWidth()
-            .padding(horizontal = 24.dp, vertical = 28.dp),
+          modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 28.dp),
           horizontalAlignment = Alignment.CenterHorizontally
         ) {
           Box(
-            modifier = Modifier
-              .size(76.dp)
-              .shadow(8.dp, CircleShape, spotColor = MaterialTheme.colorScheme.primary)
-              .clip(CircleShape)
-              .background(MaterialTheme.colorScheme.primary)
-              .testTag("engine_icon"),
+            modifier = Modifier.size(76.dp).shadow(8.dp, CircleShape, spotColor = MaterialTheme.colorScheme.primary)
+              .clip(CircleShape).background(MaterialTheme.colorScheme.primary).testTag("engine_icon"),
             contentAlignment = Alignment.Center
           ) {
             Icon(
@@ -236,19 +252,16 @@ fun LocalLLMApp(
           }
 
           Spacer(modifier = Modifier.height(20.dp))
-
           Text(
-            text = "Phase 3-B-1: GGUF Model Loading",
+            text = "Phase 3-C: Minimal Inference",
             style = MaterialTheme.typography.headlineSmall,
             fontWeight = FontWeight.Bold,
             color = MaterialTheme.colorScheme.onPrimaryContainer,
             modifier = Modifier.testTag("build_test_label")
           )
-
           Spacer(modifier = Modifier.height(4.dp))
-
           Text(
-            text = "JNI + llama.cpp model loader",
+            text = "JNI + llama.cpp tokenizer / decode",
             style = MaterialTheme.typography.bodyMedium,
             fontWeight = FontWeight.Medium,
             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -256,16 +269,15 @@ fun LocalLLMApp(
           )
 
           Spacer(modifier = Modifier.height(16.dp))
-
           Button(
             onClick = onSelectModel,
+            enabled = !isLoading,
             modifier = Modifier.fillMaxWidth().testTag("select_model_button")
           ) {
-            Text("GGUFモデルを選択")
+            Text(if (isLoading) "処理中..." else "GGUFモデルを選択")
           }
 
           Spacer(modifier = Modifier.height(12.dp))
-
           Text(
             text = selectedModelName,
             style = MaterialTheme.typography.bodySmall,
@@ -273,21 +285,24 @@ fun LocalLLMApp(
           )
 
           Spacer(modifier = Modifier.height(12.dp))
+          Button(
+            onClick = onRunInference,
+            enabled = !isLoading && modelStatus.startsWith("SUCCESS:"),
+            modifier = Modifier.fillMaxWidth().testTag("inference_button")
+          ) {
+            Text("最小推論テストを実行")
+          }
 
+          Spacer(modifier = Modifier.height(12.dp))
           Surface(
             color = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(12.dp),
             border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
-            modifier = Modifier
-              .fillMaxWidth()
-              .testTag("native_message_container")
+            modifier = Modifier.fillMaxWidth().testTag("native_message_container")
           ) {
-            Column(
-              modifier = Modifier.padding(16.dp),
-              horizontalAlignment = Alignment.CenterHorizontally
-            ) {
+            Column(modifier = Modifier.padding(16.dp), horizontalAlignment = Alignment.CenterHorizontally) {
               Text(
-                text = "C++ NATIVE OUTPUT",
+                text = "MODEL / CONTEXT",
                 style = MaterialTheme.typography.labelSmall,
                 fontWeight = FontWeight.Bold,
                 color = MaterialTheme.colorScheme.primary
@@ -300,6 +315,20 @@ fun LocalLLMApp(
                 color = MaterialTheme.colorScheme.onSurface,
                 modifier = Modifier.testTag("native_output_text")
               )
+              Spacer(modifier = Modifier.height(12.dp))
+              Text(
+                text = "INFERENCE TEST",
+                style = MaterialTheme.typography.labelSmall,
+                fontWeight = FontWeight.Bold,
+                color = MaterialTheme.colorScheme.primary
+              )
+              Spacer(modifier = Modifier.height(6.dp))
+              Text(
+                text = inferenceStatus,
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurface,
+                modifier = Modifier.testTag("inference_output_text")
+              )
               Spacer(modifier = Modifier.height(8.dp))
               Text(
                 text = nativeMessage,
@@ -310,14 +339,13 @@ fun LocalLLMApp(
           }
 
           Spacer(modifier = Modifier.height(16.dp))
-
           Surface(
             color = MaterialTheme.colorScheme.primaryContainer,
             shape = RoundedCornerShape(50),
             modifier = Modifier.testTag("status_chip")
           ) {
             Text(
-              text = "PHASE 3-B-1 ACTIVE",
+              text = "PHASE 3-C ACTIVE",
               style = MaterialTheme.typography.labelSmall,
               fontWeight = FontWeight.Bold,
               color = MaterialTheme.colorScheme.onPrimaryContainer,
@@ -327,76 +355,34 @@ fun LocalLLMApp(
         }
       }
 
-      Column(
-        modifier = Modifier.fillMaxWidth(),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-      ) {
-        SleekInfoCard(
-          icon = Icons.Filled.PhoneAndroid,
-          category = "Target Platform",
-          value = "Android ARM64-v8a"
-        )
-        SleekInfoCard(
-          icon = Icons.Filled.AccountTree,
-          category = "Pipeline",
-          value = "GitHub Actions Runner"
-        )
+      Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        SleekInfoCard(Icons.Filled.PhoneAndroid, "Target Platform", "Android ARM64-v8a")
+        SleekInfoCard(Icons.Filled.AccountTree, "Pipeline", "GitHub Actions Runner")
       }
     }
   }
 }
 
 @Composable
-private fun SleekInfoCard(
-  icon: ImageVector,
-  category: String,
-  value: String
-) {
+private fun SleekInfoCard(icon: ImageVector, category: String, value: String) {
   Card(
     modifier = Modifier.fillMaxWidth(),
     shape = RoundedCornerShape(16.dp),
-    colors = CardDefaults.cardColors(
-      containerColor = MaterialTheme.colorScheme.surface
-    ),
+    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
     border = BorderStroke(1.dp, MaterialTheme.colorScheme.outline),
     elevation = CardDefaults.cardElevation(defaultElevation = 1.dp)
   ) {
-    Row(
-      modifier = Modifier
-        .fillMaxWidth()
-        .padding(16.dp),
-      verticalAlignment = Alignment.CenterVertically
-    ) {
+    Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
       Box(
-        modifier = Modifier
-          .size(40.dp)
-          .clip(RoundedCornerShape(10.dp))
-          .background(MaterialTheme.colorScheme.surfaceVariant),
+        modifier = Modifier.size(40.dp).clip(RoundedCornerShape(10.dp)).background(MaterialTheme.colorScheme.surfaceVariant),
         contentAlignment = Alignment.Center
       ) {
-        Icon(
-          imageVector = icon,
-          contentDescription = null,
-          tint = MaterialTheme.colorScheme.onSurfaceVariant,
-          modifier = Modifier.size(20.dp)
-        )
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(20.dp))
       }
-
       Spacer(modifier = Modifier.width(16.dp))
-
       Column {
-        Text(
-          text = category.uppercase(),
-          style = MaterialTheme.typography.labelSmall,
-          fontWeight = FontWeight.Bold,
-          color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-          text = value,
-          style = MaterialTheme.typography.bodyMedium,
-          fontWeight = FontWeight.Medium,
-          color = MaterialTheme.colorScheme.onSurface
-        )
+        Text(category.uppercase(), style = MaterialTheme.typography.labelSmall, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodyMedium, fontWeight = FontWeight.Medium, color = MaterialTheme.colorScheme.onSurface)
       }
     }
   }
@@ -410,7 +396,5 @@ fun Greeting(name: String, modifier: Modifier = Modifier) {
 @Preview(showBackground = true)
 @Composable
 fun LocalLLMAppPreview() {
-  MyApplicationTheme {
-    LocalLLMApp()
-  }
+  MyApplicationTheme { LocalLLMApp() }
 }
