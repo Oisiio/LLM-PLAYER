@@ -18,6 +18,11 @@ jobs:
 
       - name: Checkout llama.cpp at fixed commit
         run: |
+          # The repository may contain a vendored third_party/llama.cpp directory.
+          # Remove it before cloning so the CI checkout cannot fail with
+          # "destination path ... already exists and is not an empty directory".
+          rm -rf third_party/llama.cpp
+          mkdir -p third_party
           git clone --depth 1 https://github.com/ggml-org/llama.cpp.git third_party/llama.cpp
           cd third_party/llama.cpp
           git fetch --depth 1 origin 4e97ac86ebe2c4cb8212d98d2641ad6768810896
