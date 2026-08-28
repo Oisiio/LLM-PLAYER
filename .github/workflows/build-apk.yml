@@ -2,7 +2,7 @@ name: Build APK
 
 on:
   push:
-    branches: [ "main", "master" ]
+    branches: [ "main", "master", "phase-3a" ]
   pull_request:
     branches: [ "main", "master" ]
   workflow_dispatch:
@@ -15,6 +15,14 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Checkout llama.cpp at fixed commit
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git third_party/llama.cpp
+          cd third_party/llama.cpp
+          git fetch --depth 1 origin 4e97ac86ebe2c4cb8212d98d2641ad6768810896
+          git checkout --detach 4e97ac86ebe2c4cb8212d98d2641ad6768810896
+          test "$(git rev-parse HEAD)" = "4e97ac86ebe2c4cb8212d98d2641ad6768810896"
 
       - name: Set up JDK 21
         uses: actions/setup-java@v4
