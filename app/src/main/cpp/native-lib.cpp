@@ -74,6 +74,98 @@ bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & toke
 
     return !tokens.empty();
 }
+
+std::string generate_greedy_locked(const std::string & prompt_text) {
+    std::vector<llama_token> tokens;
+    if (!tokenize_prompt(prompt_text, tokens)) {
+        return "ERROR: llama_tokenize failed";
+    }
+    if (tokens.empty() || tokens.size() > 512) {
+        return "ERROR: invalid token count";
+    }
+
+    llama_memory_clear(llama_get_memory(g_context), true);
+
+    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
+    if (llama_decode(g_context, batch) != 0) {
+        return "ERROR: llama_decode failed";
+    }
+
+    const llama_vocab * vocab = llama_model_get_vocab(g_model);
+    if (vocab == nullptr) {
+        return "ERROR: vocab is unavailable";
+    }
+
+    const int32_t vocab_size = llama_vocab_n_tokens(vocab);
+    if (vocab_size <= 0) {
+        return "ERROR: invalid vocabulary size";
+    }
+
+    constexpr int32_t kMaxGenTokens = 128;
+    constexpr int32_t kMaxContextTokens = 512;
+    const llama_token eos_token = llama_vocab_eos(vocab);
+
+    std::string generated_text;
+    int32_t generated_count = 0;
+
+    for (int32_t i = 0; i < kMaxGenTokens; ++i) {
+        if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) {
+            break;
+        }
+
+        const float * logits = llama_get_logits(g_context);
+        if (logits == nullptr) {
+            return "ERROR: logits are unavailable";
+        }
+
+        int32_t best_token = 0;
+        float best_logit = logits[0];
+        for (int32_t v = 1; v < vocab_size; ++v) {
+            if (logits[v] > best_logit) {
+                best_logit = logits[v];
+                best_token = v;
+            }
+        }
+
+        const llama_token current_token = static_cast<llama_token>(best_token);
+        if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
+            break;
+        }
+
+        char token_text[256] = {};
+        const int32_t token_length = llama_token_to_piece(
+            vocab,
+            current_token,
+            token_text,
+            static_cast<int32_t>(sizeof(token_text)),
+            0,
+            true
+        );
+        if (token_length < 0) {
+            return "ERROR: llama_token_to_piece failed";
+        }
+        if (token_length > 0) {
+            generated_text.append(token_text, static_cast<size_t>(token_length));
+        }
+
+        generated_count++;
+        if (generated_count >= kMaxGenTokens) {
+            break;
+        }
+
+        llama_token next_token = current_token;
+        llama_batch token_batch = llama_batch_get_one(&next_token, 1);
+        if (llama_decode(g_context, token_batch) != 0) {
+            return "ERROR: llama_decode failed";
+        }
+    }
+
+    return "SUCCESS: user prompt inference completed\n"
+        "PROMPT: " + prompt_text + "\n"
+        "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
+        "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
+        "GENERATED TEXT: " + generated_text;
+}
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -138,100 +230,11 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
     }
 
     const std::string prompt = "こんにちは。短く自己紹介してください。";
-    std::vector<llama_token> tokens;
-    if (!tokenize_prompt(prompt, tokens)) {
-        return env->NewStringUTF("ERROR: llama_tokenize failed");
-    }
-    if (tokens.empty() || tokens.size() > 512) {
-        return env->NewStringUTF("ERROR: invalid token count");
-    }
-
-    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-    const int32_t decode_result = llama_decode(g_context, batch);
-    if (decode_result != 0) {
-        return env->NewStringUTF("ERROR: llama_decode failed");
-    }
-
-    const llama_vocab * vocab = llama_model_get_vocab(g_model);
-    if (vocab == nullptr) {
-        return env->NewStringUTF("ERROR: vocab is unavailable");
-    }
-
-    const int32_t vocab_size = llama_vocab_n_tokens(vocab);
-    if (vocab_size <= 0) {
-        return env->NewStringUTF("ERROR: invalid vocabulary size");
-    }
-
-    constexpr int32_t kMaxGenTokens = 20;
-    constexpr int32_t kMaxContextTokens = 512;
-    const llama_token eos_token = llama_vocab_eos(vocab);
-
-    std::string generated_text;
-    int32_t generated_count = 0;
-
-    for (int32_t i = 0; i < kMaxGenTokens; ++i) {
-        if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) {
-            break;
-        }
-
-        const float * logits = llama_get_logits(g_context);
-        if (logits == nullptr) {
-            return env->NewStringUTF("ERROR: logits are unavailable");
-        }
-
-        int32_t best_token = 0;
-        float best_logit = logits[0];
-        for (int32_t v = 1; v < vocab_size; ++v) {
-            if (logits[v] > best_logit) {
-                best_logit = logits[v];
-                best_token = v;
-            }
-        }
-
-        const llama_token current_token = static_cast<llama_token>(best_token);
-        if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
-            break;
-        }
-
-        char token_text[256] = {};
-        const int32_t token_length = llama_token_to_piece(
-            vocab,
-            current_token,
-            token_text,
-            static_cast<int32_t>(sizeof(token_text)),
-            0,
-            true
-        );
-        if (token_length < 0) {
-            return env->NewStringUTF("ERROR: llama_token_to_piece failed");
-        }
-        if (token_length > 0) {
-            generated_text.append(token_text, static_cast<size_t>(token_length));
-        }
-
-        generated_count++;
-        if (generated_count >= kMaxGenTokens) {
-            break;
-        }
-
-        llama_token next_token = current_token;
-        llama_batch token_batch = llama_batch_get_one(&next_token, 1);
-        const int32_t next_decode = llama_decode(g_context, token_batch);
-        if (next_decode != 0) {
-            return env->NewStringUTF("ERROR: llama_decode failed");
-        }
-    }
-
-    const std::string result = "SUCCESS: multi-token generation completed\n"
-        "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
-        "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
-        "GENERATED TEXT: " + generated_text;
-
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Multi-token generation completed: %d tokens", generated_count);
+    const std::string result = generate_greedy_locked(prompt);
     return env->NewStringUTF(result.c_str());
 }
 
-// Phase 4-A / 4-B: receive a user prompt through JNI and generate from it.
+// Phase 4-B / 4-C: receive a user prompt through JNI and generate from it.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, jstring prompt) {
     if (prompt == nullptr) {
@@ -252,103 +255,7 @@ Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, 
         return env->NewStringUTF("ERROR: model/context is not loaded");
     }
 
-    const std::vector<llama_token> empty_tokens;
-    (void) empty_tokens;
-
-    std::vector<llama_token> tokens;
-    if (!tokenize_prompt(prompt_text, tokens)) {
-        return env->NewStringUTF("ERROR: llama_tokenize failed");
-    }
-    if (tokens.empty() || tokens.size() > 512) {
-        return env->NewStringUTF("ERROR: invalid token count");
-    }
-
-    // Each user request starts from a clean KV memory so prompts do not leak into one another.
-    llama_memory_clear(llama_get_memory(g_context), true);
-
-    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-    const int32_t decode_result = llama_decode(g_context, batch);
-    if (decode_result != 0) {
-        return env->NewStringUTF("ERROR: llama_decode failed");
-    }
-
-    const llama_vocab * vocab = llama_model_get_vocab(g_model);
-    if (vocab == nullptr) {
-        return env->NewStringUTF("ERROR: vocab is unavailable");
-    }
-
-    const int32_t vocab_size = llama_vocab_n_tokens(vocab);
-    if (vocab_size <= 0) {
-        return env->NewStringUTF("ERROR: invalid vocabulary size");
-    }
-
-    constexpr int32_t kMaxGenTokens = 20;
-    constexpr int32_t kMaxContextTokens = 512;
-    const llama_token eos_token = llama_vocab_eos(vocab);
-
-    std::string generated_text;
-    int32_t generated_count = 0;
-
-    for (int32_t i = 0; i < kMaxGenTokens; ++i) {
-        if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) {
-            break;
-        }
-
-        const float * logits = llama_get_logits(g_context);
-        if (logits == nullptr) {
-            return env->NewStringUTF("ERROR: logits are unavailable");
-        }
-
-        int32_t best_token = 0;
-        float best_logit = logits[0];
-        for (int32_t v = 1; v < vocab_size; ++v) {
-            if (logits[v] > best_logit) {
-                best_logit = logits[v];
-                best_token = v;
-            }
-        }
-
-        const llama_token current_token = static_cast<llama_token>(best_token);
-        if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
-            break;
-        }
-
-        char token_text[256] = {};
-        const int32_t token_length = llama_token_to_piece(
-            vocab,
-            current_token,
-            token_text,
-            static_cast<int32_t>(sizeof(token_text)),
-            0,
-            true
-        );
-        if (token_length < 0) {
-            return env->NewStringUTF("ERROR: llama_token_to_piece failed");
-        }
-        if (token_length > 0) {
-            generated_text.append(token_text, static_cast<size_t>(token_length));
-        }
-
-        generated_count++;
-        if (generated_count >= kMaxGenTokens) {
-            break;
-        }
-
-        llama_token next_token = current_token;
-        llama_batch token_batch = llama_batch_get_one(&next_token, 1);
-        const int32_t next_decode = llama_decode(g_context, token_batch);
-        if (next_decode != 0) {
-            return env->NewStringUTF("ERROR: llama_decode failed");
-        }
-    }
-
-    const std::string result = "SUCCESS: user prompt inference completed\n"
-        "PROMPT: " + prompt_text + "\n"
-        "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
-        "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
-        "GENERATED TEXT: " + generated_text;
-
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "User prompt inference completed: %d tokens", generated_count);
+    const std::string result = generate_greedy_locked(prompt_text);
     return env->NewStringUTF(result.c_str());
 }
 
