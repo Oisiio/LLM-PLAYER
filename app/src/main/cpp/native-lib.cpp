@@ -32,14 +32,47 @@ bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & toke
         return false;
     }
 
-    const int32_t count = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), nullptr, 0, true, true);
-    if (count <= 0) {
+    const int32_t required_signed = llama_tokenize(
+        vocab,
+        prompt.c_str(),
+        static_cast<int32_t>(prompt.size()),
+        nullptr,
+        0,
+        true,
+        false
+    );
+
+    if (required_signed >= 0) {
         return false;
     }
 
-    tokens.resize(static_cast<size_t>(count));
-    const int32_t result = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(), count, true, true);
-    return result == count;
+    const int32_t required = -required_signed;
+    if (required <= 0) {
+        return false;
+    }
+
+    tokens.resize(static_cast<size_t>(required));
+
+    const int32_t actual = llama_tokenize(
+        vocab,
+        prompt.c_str(),
+        static_cast<int32_t>(prompt.size()),
+        tokens.data(),
+        required,
+        true,
+        false
+    );
+
+    if (actual < 0) {
+        tokens.clear();
+        return false;
+    }
+
+    if (actual != required) {
+        tokens.resize(static_cast<size_t>(actual));
+    }
+
+    return !tokens.empty();
 }
 }
 
