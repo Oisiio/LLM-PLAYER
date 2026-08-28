@@ -2,7 +2,10 @@
 #include <android/log.h>
 #include <sys/stat.h>
 
+#include <algorithm>
+#include <cmath>
 #include <mutex>
+#include <random>
 #include <string>
 #include <vector>
 
@@ -10,6 +13,7 @@
 
 namespace {
 constexpr char kLogTag[] = "LLM-PLAYER";
+constexpr float kTemperature = 0.7f;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -75,7 +79,52 @@ bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & toke
     return !tokens.empty();
 }
 
-std::string generate_greedy_locked(const std::string & prompt_text) {
+llama_token sample_temperature(const float * logits, int32_t vocab_size, float temperature, std::mt19937 & rng) {
+    if (temperature <= 0.0f) {
+        int32_t best_token = 0;
+        float best_logit = logits[0];
+        for (int32_t v = 1; v < vocab_size; ++v) {
+            if (logits[v] > best_logit) {
+                best_logit = logits[v];
+                best_token = v;
+            }
+        }
+        return static_cast<llama_token>(best_token);
+    }
+
+    float max_logit = logits[0];
+    for (int32_t v = 1; v < vocab_size; ++v) {
+        max_logit = std::max(max_logit, logits[v]);
+    }
+
+    std::vector<float> probabilities(static_cast<size_t>(vocab_size));
+    double probability_sum = 0.0;
+    for (int32_t v = 0; v < vocab_size; ++v) {
+        const double scaled = (static_cast<double>(logits[v]) - max_logit) / temperature;
+        const float probability = static_cast<float>(std::exp(scaled));
+        probabilities[static_cast<size_t>(v)] = probability;
+        probability_sum += probability;
+    }
+
+    if (!(probability_sum > 0.0) || !std::isfinite(probability_sum)) {
+        return 0;
+    }
+
+    std::uniform_real_distribution<double> distribution(0.0, probability_sum);
+    const double target = distribution(rng);
+    double cumulative = 0.0;
+
+    for (int32_t v = 0; v < vocab_size; ++v) {
+        cumulative += probabilities[static_cast<size_t>(v)];
+        if (target <= cumulative) {
+            return static_cast<llama_token>(v);
+        }
+    }
+
+    return static_cast<llama_token>(vocab_size - 1);
+}
+
+std::string generate_temperature_locked(const std::string & prompt_text) {
     std::vector<llama_token> tokens;
     if (!tokenize_prompt(prompt_text, tokens)) {
         return "ERROR: llama_tokenize failed";
@@ -104,6 +153,7 @@ std::string generate_greedy_locked(const std::string & prompt_text) {
     constexpr int32_t kMaxGenTokens = 128;
     constexpr int32_t kMaxContextTokens = 512;
     const llama_token eos_token = llama_vocab_eos(vocab);
+    std::mt19937 rng(std::random_device{}());
 
     std::string generated_text;
     int32_t generated_count = 0;
@@ -118,16 +168,7 @@ std::string generate_greedy_locked(const std::string & prompt_text) {
             return "ERROR: logits are unavailable";
         }
 
-        int32_t best_token = 0;
-        float best_logit = logits[0];
-        for (int32_t v = 1; v < vocab_size; ++v) {
-            if (logits[v] > best_logit) {
-                best_logit = logits[v];
-                best_token = v;
-            }
-        }
-
-        const llama_token current_token = static_cast<llama_token>(best_token);
+        const llama_token current_token = sample_temperature(logits, vocab_size, kTemperature, rng);
         if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
             break;
         }
@@ -160,7 +201,8 @@ std::string generate_greedy_locked(const std::string & prompt_text) {
         }
     }
 
-    return "SUCCESS: user prompt inference completed\n"
+    return "SUCCESS: temperature sampling completed\n"
+        "TEMPERATURE: " + std::to_string(kTemperature) + "\n"
         "PROMPT: " + prompt_text + "\n"
         "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
         "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
@@ -230,11 +272,11 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
     }
 
     const std::string prompt = "こんにちは。短く自己紹介してください。";
-    const std::string result = generate_greedy_locked(prompt);
+    const std::string result = generate_temperature_locked(prompt);
     return env->NewStringUTF(result.c_str());
 }
 
-// Phase 4-B / 4-C: receive a user prompt through JNI and generate from it.
+// Phase 4-D: receive a user prompt through JNI and generate with temperature sampling.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, jstring prompt) {
     if (prompt == nullptr) {
@@ -255,7 +297,7 @@ Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, 
         return env->NewStringUTF("ERROR: model/context is not loaded");
     }
 
-    const std::string result = generate_greedy_locked(prompt_text);
+    const std::string result = generate_temperature_locked(prompt_text);
     return env->NewStringUTF(result.c_str());
 }
 
