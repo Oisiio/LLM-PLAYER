@@ -14,6 +14,7 @@
 namespace {
 constexpr char kLogTag[] = "LLM-PLAYER";
 constexpr float kTemperature = 0.7f;
+constexpr int32_t kTopK = 40;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -79,49 +80,67 @@ bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & toke
     return !tokens.empty();
 }
 
-llama_token sample_temperature(const float * logits, int32_t vocab_size, float temperature, std::mt19937 & rng) {
-    if (temperature <= 0.0f) {
-        int32_t best_token = 0;
-        float best_logit = logits[0];
-        for (int32_t v = 1; v < vocab_size; ++v) {
-            if (logits[v] > best_logit) {
-                best_logit = logits[v];
-                best_token = v;
-            }
+llama_token sample_temperature_top_k(
+    const float * logits,
+    int32_t vocab_size,
+    float temperature,
+    int32_t top_k,
+    std::mt19937 & rng) {
+    if (vocab_size <= 0) {
+        return 0;
+    }
+
+    top_k = std::max<int32_t>(1, std::min<int32_t>(top_k, vocab_size));
+
+    std::vector<int32_t> indices(static_cast<size_t>(vocab_size));
+    for (int32_t i = 0; i < vocab_size; ++i) {
+        indices[static_cast<size_t>(i)] = i;
+    }
+
+    std::partial_sort(
+        indices.begin(),
+        indices.begin() + top_k,
+        indices.end(),
+        [logits](int32_t a, int32_t b) {
+            return logits[a] > logits[b];
         }
-        return static_cast<llama_token>(best_token);
+    );
+
+    if (temperature <= 0.0f) {
+        return static_cast<llama_token>(indices[0]);
     }
 
-    float max_logit = logits[0];
-    for (int32_t v = 1; v < vocab_size; ++v) {
-        max_logit = std::max(max_logit, logits[v]);
+    float max_logit = logits[indices[0]];
+    for (int32_t i = 1; i < top_k; ++i) {
+        max_logit = std::max(max_logit, logits[indices[static_cast<size_t>(i)]]);
     }
 
-    std::vector<float> probabilities(static_cast<size_t>(vocab_size));
+    std::vector<float> probabilities(static_cast<size_t>(top_k));
     double probability_sum = 0.0;
-    for (int32_t v = 0; v < vocab_size; ++v) {
-        const double scaled = (static_cast<double>(logits[v]) - max_logit) / temperature;
+    for (int32_t i = 0; i < top_k; ++i) {
+        const int32_t token_index = indices[static_cast<size_t>(i)];
+        const double scaled = (static_cast<double>(logits[token_index]) - max_logit) / temperature;
         const float probability = static_cast<float>(std::exp(scaled));
-        probabilities[static_cast<size_t>(v)] = probability;
+        probabilities[static_cast<size_t>(i)] = probability;
         probability_sum += probability;
     }
 
     if (!(probability_sum > 0.0) || !std::isfinite(probability_sum)) {
-        return 0;
+        return static_cast<llama_token>(indices[0]);
     }
 
     std::uniform_real_distribution<double> distribution(0.0, probability_sum);
     const double target = distribution(rng);
     double cumulative = 0.0;
 
-    for (int32_t v = 0; v < vocab_size; ++v) {
-        cumulative += probabilities[static_cast<size_t>(v)];
+    for (int32_t i = 0; i < top_k; ++i) {
+        cumulative += probabilities[static_cast<size_t>(i)];
         if (target <= cumulative) {
-            return static_cast<llama_token>(v);
+            return static_cast<llama_token>(indices[static_cast<size_t>(i)]);
         }
     }
 
-    return static_cast<llama_token>(vocab_size - 1);
+    return static_cast<llama_token>(indices[static_cast<size_t>(top_k - 1)]);
 }
 
 std::string generate_temperature_locked(const std::string & prompt_text) {
@@ -168,7 +187,8 @@ std::string generate_temperature_locked(const std::string & prompt_text) {
             return "ERROR: logits are unavailable";
         }
 
-        const llama_token current_token = sample_temperature(logits, vocab_size, kTemperature, rng);
+        const llama_token current_token = sample_temperature_top_k(
+            logits, vocab_size, kTemperature, kTopK, rng);
         if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
             break;
         }
@@ -201,8 +221,9 @@ std::string generate_temperature_locked(const std::string & prompt_text) {
         }
     }
 
-    return "SUCCESS: temperature sampling completed\n"
+    return "SUCCESS: temperature + top-k sampling completed\n"
         "TEMPERATURE: " + std::to_string(kTemperature) + "\n"
+        "TOP-K: " + std::to_string(kTopK) + "\n"
         "PROMPT: " + prompt_text + "\n"
         "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
         "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
@@ -276,7 +297,7 @@ Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* thi
     return env->NewStringUTF(result.c_str());
 }
 
-// Phase 4-D: receive a user prompt through JNI and generate with temperature sampling.
+// Phase 4-D: receive a user prompt through JNI and generate with temperature + Top-K sampling.
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, jstring prompt) {
     if (prompt == nullptr) {
