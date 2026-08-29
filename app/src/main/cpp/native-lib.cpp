@@ -183,7 +183,6 @@ std::string generate_sampling_locked(
 
     constexpr int32_t kMaxGenTokens = 128;
     constexpr int32_t kMaxContextTokens = 512;
-    const llama_token eos_token = llama_vocab_eos(vocab);
     std::mt19937 rng(std::random_device{}());
 
     std::string generated_text;
@@ -202,7 +201,7 @@ std::string generate_sampling_locked(
         const llama_token current_token = sample_temperature_top_k_top_p(
             logits, vocab_size, temperature, top_k, top_p, rng);
 
-        if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
+        if (llama_vocab_is_eog(vocab, current_token)) {
             break;
         }
 
