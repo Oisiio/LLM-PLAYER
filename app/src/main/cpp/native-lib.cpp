@@ -151,7 +151,7 @@ llama_token sample_temperature_top_k_top_p(
     return static_cast<llama_token>(indices[static_cast<size_t>(candidate_count - 1)]);
 }
 
-std::string generate_sampling_locked(const std::string & prompt_text) {
+std::string generate_sampling_locked(const std::string & prompt_text, float temperature = kTemperature) {
     std::vector<llama_token> tokens;
     if (!tokenize_prompt(prompt_text, tokens)) {
         return "ERROR: llama_tokenize failed";
@@ -196,7 +196,7 @@ std::string generate_sampling_locked(const std::string & prompt_text) {
         }
 
         const llama_token current_token = sample_temperature_top_k_top_p(
-            logits, vocab_size, kTemperature, kTopK, kTopP, rng);
+            logits, vocab_size, temperature, kTopK, kTopP, rng);
 
         if (llama_vocab_is_eog(vocab, current_token) || current_token == eos_token) {
             break;
@@ -225,7 +225,7 @@ std::string generate_sampling_locked(const std::string & prompt_text) {
     }
 
     return "SUCCESS: temperature + top-k + top-p sampling completed\n"
-        "TEMPERATURE: " + std::to_string(kTemperature) + "\n"
+        "TEMPERATURE: " + std::to_string(temperature) + "\n"
         "TOP-K: " + std::to_string(kTopK) + "\n"
         "TOP-P: " + std::to_string(kTopP) + "\n"
         "PROMPT: " + prompt_text + "\n"
@@ -302,6 +302,23 @@ Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, 
         return env->NewStringUTF("ERROR: model/context is not loaded");
     }
     const std::string result = generate_sampling_locked(prompt_text);
+    return env->NewStringUTF(result.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_MainActivity_nativeGenerateWithTemperature(
+    JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature) {
+    if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
+    const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
+    if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
+    const std::string prompt_text(prompt_chars);
+    env->ReleaseStringUTFChars(prompt, prompt_chars);
+
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    if (g_model == nullptr || g_context == nullptr) {
+        return env->NewStringUTF("ERROR: model/context is not loaded");
+    }
+    const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature));
     return env->NewStringUTF(result.c_str());
 }
 

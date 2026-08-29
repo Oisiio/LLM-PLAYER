@@ -75,6 +75,7 @@ class MainActivity : ComponentActivity() {
   private external fun nativeLoadModel(modelPath: String): String
   private external fun nativeRunTestInference(): String
   private external fun nativeEchoPrompt(prompt: String): String
+  private external fun nativeGenerateWithTemperature(prompt: String, temperature: Float): String
   private external fun nativeUnloadModel()
   private external fun nativeIsModelLoaded(): Boolean
 
@@ -83,6 +84,7 @@ class MainActivity : ComponentActivity() {
   private var inferenceStatus by mutableStateOf("推論テスト未実行")
   private var promptText by mutableStateOf("")
   private var promptStatus by mutableStateOf("Prompt未送信")
+  private var temperatureText by mutableStateOf("0.7")
   private var isLoading by mutableStateOf(false)
 
   private val openModelLauncher = registerForActivityResult(
@@ -125,7 +127,9 @@ class MainActivity : ComponentActivity() {
           inferenceStatus = inferenceStatus,
           promptText = promptText,
           promptStatus = promptStatus,
+          temperatureText = temperatureText,
           isLoading = isLoading,
+          onTemperatureChange = { temperatureText = it },
           onPromptChange = { promptText = it },
           onSelectModel = { openModelLauncher.launch(arrayOf("application/octet-stream", "application/*")) },
           onRunInference = {
@@ -139,7 +143,8 @@ class MainActivity : ComponentActivity() {
           onSendPrompt = {
             isLoading = true
             lifecycleScope.launch {
-              val result = sendPrompt(promptText)
+              val temp = temperatureText.toFloatOrNull() ?: 0.7f
+              val result = sendPrompt(promptText, temp)
               promptStatus = result
               isLoading = false
             }
@@ -185,11 +190,11 @@ class MainActivity : ComponentActivity() {
     nativeRunTestInference()
   }
 
-  private suspend fun sendPrompt(prompt: String): String = withContext(Dispatchers.Default) {
+  private suspend fun sendPrompt(prompt: String, temperature: Float): String = withContext(Dispatchers.Default) {
     if (prompt.isBlank()) {
       return@withContext "ERROR: Promptが空です"
     }
-    nativeEchoPrompt(prompt)
+    nativeGenerateWithTemperature(prompt, temperature)
   }
 
   override fun onDestroy() {
@@ -211,7 +216,9 @@ fun LocalLLMApp(
   inferenceStatus: String = "推論テスト未実行",
   promptText: String = "",
   promptStatus: String = "Prompt未送信",
+  temperatureText: String = "0.7",
   isLoading: Boolean = false,
+  onTemperatureChange: (String) -> Unit = {},
   onPromptChange: (String) -> Unit = {},
   onSelectModel: () -> Unit = {},
   onRunInference: () -> Unit = {},
@@ -312,6 +319,17 @@ fun LocalLLMApp(
           )
 
           Spacer(modifier = Modifier.height(16.dp))
+          TextField(
+            value = temperatureText,
+            onValueChange = onTemperatureChange,
+            enabled = !isLoading,
+            modifier = Modifier.fillMaxWidth().testTag("temperature_input"),
+            label = { Text("Temperature") },
+            placeholder = { Text("0.7") },
+            singleLine = true
+          )
+
+          Spacer(modifier = Modifier.height(12.dp))
           TextField(
             value = promptText,
             onValueChange = onPromptChange,
