@@ -183,6 +183,7 @@ std::string generate_sampling_locked(
 
     constexpr int32_t kMaxGenTokens = 128;
     constexpr int32_t kMaxContextTokens = 512;
+    constexpr const char * kStopSequence = "<END>";
     std::mt19937 rng(std::random_device{}());
 
     std::string generated_text;
@@ -219,6 +220,17 @@ std::string generate_sampling_locked(
         }
 
         generated_count++;
+
+        // Phase 4-E-3: Stop Sequence handling.
+        // Detect stop sequence across token boundaries in generated UTF-8 text.
+        // If detected, strip the stop sequence from the output text and immediately stop generation.
+        const std::string stop_sequence = kStopSequence;
+        const size_t stop_pos = generated_text.find(stop_sequence);
+        if (stop_pos != std::string::npos) {
+            generated_text.erase(stop_pos);
+            break;
+        }
+
         if (generated_count >= kMaxGenTokens) {
             break;
         }
