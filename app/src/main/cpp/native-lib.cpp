@@ -113,8 +113,6 @@ llama_token sample_temperature_top_k_top_p(
         return static_cast<llama_token>(indices[0]);
     }
 
-    // Convert the Top-K candidates into normalized probabilities, then keep
-    // the smallest prefix whose cumulative probability reaches Top-P.
     int32_t candidate_count = top_k;
     if (top_p < 1.0f) {
         double cumulative = 0.0;
@@ -183,7 +181,7 @@ std::string generate_sampling_locked(
 
     constexpr int32_t kMaxGenTokens = 128;
     constexpr int32_t kMaxContextTokens = 512;
-    constexpr const char * kStopSequence = "<END>";
+    constexpr const char * kStopSequence = "。";
     std::mt19937 rng(std::random_device{}());
 
     std::string generated_text;
@@ -202,9 +200,6 @@ std::string generate_sampling_locked(
         const llama_token current_token = sample_temperature_top_k_top_p(
             logits, vocab_size, temperature, top_k, top_p, rng);
 
-        // Phase 4-E-2: Stop generation if the token is an End-Of-Generation (EOG) token.
-        // In llama.cpp, llama_vocab_is_eog() comprehensively checks special_eog_ids,
-        // which includes EOS (special_eos_id), EOT (special_eot_id), and EOM (special_eom_id).
         if (llama_vocab_is_eog(vocab, current_token)) {
             break;
         }
@@ -221,9 +216,6 @@ std::string generate_sampling_locked(
 
         generated_count++;
 
-        // Phase 4-E-3: Stop Sequence handling.
-        // Detect stop sequence across token boundaries in generated UTF-8 text.
-        // If detected, strip the stop sequence from the output text and immediately stop generation.
         const std::string stop_sequence = kStopSequence;
         const size_t stop_pos = generated_text.find(stop_sequence);
         if (stop_pos != std::string::npos) {
@@ -324,8 +316,7 @@ Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, 
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeGenerateWithTemperature(
-    JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature) {
+Java_com_example_MainActivity_nativeGenerateWithTemperature(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
     if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
@@ -341,8 +332,7 @@ Java_com_example_MainActivity_nativeGenerateWithTemperature(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeGenerateWithTemperatureAndTopK(
-    JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k) {
+Java_com_example_MainActivity_nativeGenerateWithTemperatureAndTopK(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
     if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
@@ -359,8 +349,7 @@ Java_com_example_MainActivity_nativeGenerateWithTemperatureAndTopK(
 }
 
 extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeGenerateWithTemperatureTopKTopP(
-    JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p) {
+Java_com_example_MainActivity_nativeGenerateWithTemperatureTopKTopP(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
     if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
