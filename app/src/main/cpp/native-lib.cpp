@@ -201,6 +201,9 @@ std::string generate_sampling_locked(
         const llama_token current_token = sample_temperature_top_k_top_p(
             logits, vocab_size, temperature, top_k, top_p, rng);
 
+        // Phase 4-E-2: Stop generation if the token is an End-Of-Generation (EOG) token.
+        // In llama.cpp, llama_vocab_is_eog() comprehensively checks special_eog_ids,
+        // which includes EOS (special_eos_id), EOT (special_eot_id), and EOM (special_eom_id).
         if (llama_vocab_is_eog(vocab, current_token)) {
             break;
         }
