@@ -3,7 +3,9 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <mutex>
 #include <random>
 #include <string>
@@ -19,6 +21,8 @@ constexpr int32_t kTopK = 40;
 constexpr float kTopP = 0.9f;
 constexpr float kRepetitionPenalty = 1.1f;
 constexpr int32_t kPenaltyLastN = 64;
+// Phase 4-E-5: Seed control. Set to >= 0 for fixed seed (e.g. 12345), or -1 for random seed.
+constexpr int64_t kSeed = 12345;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -196,12 +200,19 @@ void apply_repetition_penalty(
     }
 }
 
+std::string format_metric(double val, int precision) {
+    char buf[64];
+    std::snprintf(buf, sizeof(buf), "%.*f", precision, val);
+    return std::string(buf);
+}
+
 std::string generate_sampling_locked(
     const std::string & prompt_text,
     float temperature = kTemperature,
     int32_t top_k = kTopK,
     float top_p = kTopP,
-    float repetition_penalty = kRepetitionPenalty) {
+    float repetition_penalty = kRepetitionPenalty,
+    int64_t seed = kSeed) {
     if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) {
         repetition_penalty = 1.0f;
     }
@@ -216,10 +227,17 @@ std::string generate_sampling_locked(
 
     llama_memory_clear(llama_get_memory(g_context), true);
 
+    // Phase 4-E-5: Prompt processing time measurement.
+    const auto t_prompt_start = std::chrono::steady_clock::now();
+
     llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
     if (llama_decode(g_context, batch) != 0) {
         return "ERROR: llama_decode failed";
     }
+
+    const auto t_prompt_end = std::chrono::steady_clock::now();
+    const double prompt_processing_time_ms =
+        std::chrono::duration<double, std::milli>(t_prompt_end - t_prompt_start).count();
 
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
     if (vocab == nullptr) {
@@ -234,12 +252,27 @@ std::string generate_sampling_locked(
     constexpr int32_t kMaxGenTokens = 128;
     constexpr int32_t kMaxContextTokens = 512;
     constexpr const char * kStopSequence = "<END>";
-    std::mt19937 rng(std::random_device{}());
+
+    // Phase 4-E-5: Seed control (fixed seed or random seed).
+    std::mt19937 rng;
+    std::string seed_str;
+    if (seed >= 0) {
+        rng.seed(static_cast<uint32_t>(seed));
+        seed_str = std::to_string(seed);
+    } else {
+        std::random_device rd;
+        const uint32_t rand_val = rd();
+        rng.seed(rand_val);
+        seed_str = "RANDOM";
+    }
 
     std::string generated_text;
     int32_t generated_count = 0;
     std::vector<llama_token> generated_tokens;
     generated_tokens.reserve(kMaxGenTokens);
+
+    bool first_token_determined = false;
+    std::chrono::steady_clock::time_point t_first_token;
 
     for (int32_t i = 0; i < kMaxGenTokens; ++i) {
         if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) {
@@ -265,6 +298,13 @@ std::string generate_sampling_locked(
 
         const llama_token current_token = sample_temperature_top_k_top_p(
             effective_logits, vocab_size, temperature, top_k, top_p, rng);
+
+        // Phase 4-E-5: Time To First Token (TTFT).
+        // Measured from Prompt processing start until the first generated token is determined.
+        if (!first_token_determined) {
+            t_first_token = std::chrono::steady_clock::now();
+            first_token_determined = true;
+        }
 
         // Phase 4-E-2: Stop generation if the token is an End-Of-Generation (EOG) token.
         // In llama.cpp, llama_vocab_is_eog() comprehensively checks special_eog_ids,
@@ -307,6 +347,37 @@ std::string generate_sampling_locked(
         }
     }
 
+    // Phase 4-E-5: Performance Metrics calculation.
+    const auto t_generation_end = std::chrono::steady_clock::now();
+    double ttft_ms = 0.0;
+    double generation_time_ms = 0.0;
+    double total_time_ms = 0.0;
+    double generation_speed = 0.0;
+
+    if (first_token_determined) {
+        ttft_ms = std::chrono::duration<double, std::milli>(t_first_token - t_prompt_start).count();
+        generation_time_ms = std::chrono::duration<double, std::milli>(t_generation_end - t_first_token).count();
+        total_time_ms = std::chrono::duration<double, std::milli>(t_generation_end - t_prompt_start).count();
+        if (generation_time_ms > 0.0 && generated_count > 0) {
+            generation_speed = static_cast<double>(generated_count) / (generation_time_ms / 1000.0);
+        }
+    } else {
+        total_time_ms = prompt_processing_time_ms;
+    }
+
+    __android_log_print(
+        ANDROID_LOG_INFO,
+        kLogTag,
+        "Inference metrics: prompt_tokens=%zu, gen_tokens=%d, seed=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec",
+        tokens.size(),
+        generated_count,
+        seed_str.c_str(),
+        prompt_processing_time_ms,
+        ttft_ms,
+        generation_time_ms,
+        total_time_ms,
+        generation_speed);
+
     return "SUCCESS: temperature + top-k + top-p + repetition-penalty sampling completed\n"
         "TEMPERATURE: " + std::to_string(temperature) + "\n"
         "TOP-K: " + std::to_string(top_k) + "\n"
@@ -315,6 +386,12 @@ std::string generate_sampling_locked(
         "PROMPT: " + prompt_text + "\n"
         "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
         "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
+        "SEED: " + seed_str + "\n"
+        "PROMPT PROCESSING TIME: " + format_metric(prompt_processing_time_ms, 2) + " ms\n"
+        "TTFT: " + format_metric(ttft_ms, 2) + " ms\n"
+        "GENERATION TIME: " + format_metric(generation_time_ms, 2) + " ms\n"
+        "TOTAL TIME: " + format_metric(total_time_ms, 2) + " ms\n"
+        "GENERATION SPEED: " + format_metric(generation_speed, 2) + " tokens/sec\n"
         "GENERATED TEXT: " + generated_text;
 }
 }
