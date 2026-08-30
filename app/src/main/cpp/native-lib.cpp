@@ -20,25 +20,21 @@ constexpr float kTemperature = 0.7f;
 constexpr int32_t kTopK = 40;
 constexpr float kTopP = 0.9f;
 constexpr float kMinP = 0.0f;
+constexpr float kTypicalP = 1.0f;
 constexpr float kRepetitionPenalty = 1.1f;
 constexpr int32_t kPenaltyLastN = 64;
 constexpr int64_t kSeed = 12345;
 
 float g_default_min_p = kMinP;
+float g_default_typical_p = kTypicalP;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
 llama_context * g_context = nullptr;
 
 void unload_model_locked() {
-    if (g_context != nullptr) {
-        llama_free(g_context);
-        g_context = nullptr;
-    }
-    if (g_model != nullptr) {
-        llama_model_free(g_model);
-        g_model = nullptr;
-    }
+    if (g_context != nullptr) { llama_free(g_context); g_context = nullptr; }
+    if (g_model != nullptr) { llama_model_free(g_model); g_model = nullptr; }
 }
 
 bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & tokens) {
@@ -55,77 +51,133 @@ bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & toke
     return !tokens.empty();
 }
 
-void parse_prompt_min_p(std::string & prompt, float & min_p) {
-    if (prompt.size() >= 8 && prompt.front() == '[') {
-        const size_t close_pos = prompt.find(']');
-        if (close_pos != std::string::npos && close_pos < 32) {
-            const std::string tag = prompt.substr(1, close_pos - 1);
-            size_t sep_pos = tag.find('=');
-            if (sep_pos == std::string::npos) sep_pos = tag.find(':');
-            if (sep_pos != std::string::npos) {
-                std::string key = tag.substr(0, sep_pos);
-                std::string val = tag.substr(sep_pos + 1);
-                while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
-                while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
-                if (key == "min_p" || key == "min-p" || key == "Min-P" || key == "minP") {
-                    try {
-                        const float parsed = std::stof(val);
-                        min_p = std::max(0.0f, std::min(1.0f, parsed));
-                        prompt = prompt.substr(close_pos + 1);
-                        while (!prompt.empty() && (prompt.front() == ' ' || prompt.front() == '\t')) {
-                            prompt.erase(0, 1);
-                        }
-                    } catch (...) {}
-                }
-            }
+void parse_prompt_sampling_tags(std::string & prompt, float & min_p, float & typical_p) {
+    if (prompt.size() < 8 || prompt.front() != '[') return;
+    const size_t close_pos = prompt.find(']');
+    if (close_pos == std::string::npos || close_pos >= 40) return;
+    const std::string tag = prompt.substr(1, close_pos - 1);
+    const size_t sep_pos = tag.find_first_of("=:");
+    if (sep_pos == std::string::npos) return;
+    std::string key = tag.substr(0, sep_pos);
+    const std::string val = tag.substr(sep_pos + 1);
+    while (!key.empty() && (key.front() == ' ' || key.front() == '\t')) key.erase(0, 1);
+    while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
+    try {
+        const float parsed = std::stof(val);
+        if (key == "min_p" || key == "min-p" || key == "Min-P" || key == "minP") {
+            min_p = std::max(0.0f, std::min(1.0f, parsed));
+        } else if (key == "typical_p" || key == "typical-p" || key == "Typical-P" || key == "typicalP") {
+            typical_p = std::max(0.0f, std::min(1.0f, parsed));
+        } else {
+            return;
         }
-    }
+        prompt = prompt.substr(close_pos + 1);
+        while (!prompt.empty() && (prompt.front() == ' ' || prompt.front() == '\t')) prompt.erase(0, 1);
+    } catch (...) {}
 }
 
-llama_token sample_temperature_top_k_top_p_min_p(const float * logits, int32_t vocab_size, float temperature, int32_t top_k, float top_p, float min_p, std::mt19937 & rng) {
+llama_token sample_temperature_top_k_top_p_min_p_typical_p(const float * logits, int32_t vocab_size, float temperature, int32_t top_k, float top_p, float min_p, float typical_p, std::mt19937 & rng) {
     if (vocab_size <= 0) return 0;
     top_k = std::max<int32_t>(1, std::min<int32_t>(top_k, vocab_size));
     top_p = std::max(0.0f, std::min(1.0f, top_p));
     min_p = std::max(0.0f, std::min(1.0f, min_p));
+    typical_p = std::max(0.0f, std::min(1.0f, typical_p));
+
     std::vector<int32_t> indices(static_cast<size_t>(vocab_size));
     for (int32_t i = 0; i < vocab_size; ++i) indices[static_cast<size_t>(i)] = i;
     std::partial_sort(indices.begin(), indices.begin() + top_k, indices.end(), [logits](int32_t a, int32_t b) { return logits[a] > logits[b]; });
     if (temperature <= 0.0f) return static_cast<llama_token>(indices[0]);
-    float max_logit = logits[indices[0]];
-    for (int32_t i = 1; i < top_k; ++i) max_logit = std::max(max_logit, logits[indices[static_cast<size_t>(i)]]);
-    std::vector<float> probabilities(static_cast<size_t>(top_k));
+
+    const float max_logit = logits[indices[0]];
+    std::vector<double> probabilities(static_cast<size_t>(top_k));
     double probability_sum = 0.0;
     for (int32_t i = 0; i < top_k; ++i) {
         const int32_t token_index = indices[static_cast<size_t>(i)];
         const double scaled = (static_cast<double>(logits[token_index]) - max_logit) / temperature;
-        const float probability = static_cast<float>(std::exp(scaled));
+        const double probability = std::exp(scaled);
         probabilities[static_cast<size_t>(i)] = probability;
         probability_sum += probability;
     }
     if (!(probability_sum > 0.0) || !std::isfinite(probability_sum)) return static_cast<llama_token>(indices[0]);
+    for (double & p : probabilities) p /= probability_sum;
+
     int32_t candidate_count = top_k;
+
+    // Locally Typical Sampling: retain tokens closest to the model's
+    // expected information content (entropy), until cumulative mass reaches p.
+    if (typical_p < 1.0f) {
+        double entropy = 0.0;
+        for (double p : probabilities) if (p > 0.0) entropy -= p * std::log(p);
+        struct TypicalCandidate { int32_t index; double distance; double probability; };
+        std::vector<TypicalCandidate> typical;
+        typical.reserve(static_cast<size_t>(top_k));
+        for (int32_t i = 0; i < top_k; ++i) {
+            const double p = probabilities[static_cast<size_t>(i)];
+            if (p <= 0.0) continue;
+            const double surprisal = -std::log(p);
+            typical.push_back({i, std::fabs(surprisal - entropy), p});
+        }
+        std::stable_sort(typical.begin(), typical.end(), [](const TypicalCandidate & a, const TypicalCandidate & b) {
+            if (a.distance != b.distance) return a.distance < b.distance;
+            return a.index < b.index;
+        });
+        std::vector<bool> keep(static_cast<size_t>(top_k), false);
+        double cumulative = 0.0;
+        for (const auto & c : typical) {
+            keep[static_cast<size_t>(c.index)] = true;
+            cumulative += c.probability;
+            if (cumulative >= static_cast<double>(typical_p)) break;
+        }
+        // Rebuild in original logit order so Top-P and Min-P retain their
+        // established deterministic ordering.
+        int32_t kept = 0;
+        for (int32_t i = 0; i < top_k; ++i) if (keep[static_cast<size_t>(i)]) indices[static_cast<size_t>(kept++)] = indices[static_cast<size_t>(i)];
+        candidate_count = std::max<int32_t>(1, kept);
+        std::vector<double> filtered(static_cast<size_t>(candidate_count));
+        for (int32_t i = 0; i < candidate_count; ++i) {
+            const int32_t token_index = indices[static_cast<size_t>(i)];
+            auto it = std::find_if(typical.begin(), typical.end(), [token_index](const TypicalCandidate & c) { return c.index >= 0; });
+            (void) it;
+            // Map back through the original top-k indices/probabilities.
+            for (int32_t j = 0; j < top_k; ++j) {
+                if (indices[static_cast<size_t>(i)] == indices[static_cast<size_t>(j)] && j < candidate_count) { filtered[static_cast<size_t>(i)] = probabilities[static_cast<size_t>(j)]; break; }
+            }
+        }
+        // The mapping above is unnecessary for selection; reconstruct directly
+        // from logits to guarantee correct probabilities after reordering.
+        double filtered_sum = 0.0;
+        for (int32_t i = 0; i < candidate_count; ++i) {
+            const int32_t token = indices[static_cast<size_t>(i)];
+            for (int32_t j = 0; j < top_k; ++j) if (token == indices[static_cast<size_t>(j)]) { filtered[static_cast<size_t>(i)] = probabilities[static_cast<size_t>(j)]; break; }
+            filtered_sum += filtered[static_cast<size_t>(i)];
+        }
+        if (filtered_sum > 0.0) for (double & p : filtered) p /= filtered_sum;
+        probabilities.swap(filtered);
+    }
+
+    // At this point probabilities/indices contain the Typical-P candidate set.
     if (top_p < 1.0f) {
         double cumulative = 0.0;
-        candidate_count = 0;
-        for (int32_t i = 0; i < top_k; ++i) {
-            cumulative += probabilities[static_cast<size_t>(i)] / probability_sum;
-            ++candidate_count;
+        int32_t kept = 0;
+        for (int32_t i = 0; i < candidate_count; ++i) {
+            cumulative += probabilities[static_cast<size_t>(i)];
+            ++kept;
             if (cumulative >= static_cast<double>(top_p)) break;
         }
+        candidate_count = std::max<int32_t>(1, kept);
     }
+
     if (min_p > 0.0f) {
-        const double max_prob = probabilities[0] / probability_sum;
-        const double min_p_threshold = max_prob * static_cast<double>(min_p);
-        int32_t min_p_count = 0;
+        const double max_prob = probabilities[0];
+        const double threshold = max_prob * static_cast<double>(min_p);
+        int32_t kept = 0;
         for (int32_t i = 0; i < candidate_count; ++i) {
-            const double token_prob = probabilities[static_cast<size_t>(i)] / probability_sum;
-            if (token_prob < min_p_threshold && min_p_count >= 1) {
-                break;
-            }
-            ++min_p_count;
+            if (probabilities[static_cast<size_t>(i)] < threshold && kept >= 1) break;
+            ++kept;
         }
-        candidate_count = std::max<int32_t>(1, min_p_count);
+        candidate_count = std::max<int32_t>(1, kept);
     }
+
     double filtered_probability_sum = 0.0;
     for (int32_t i = 0; i < candidate_count; ++i) filtered_probability_sum += probabilities[static_cast<size_t>(i)];
     if (!(filtered_probability_sum > 0.0) || !std::isfinite(filtered_probability_sum)) return static_cast<llama_token>(indices[0]);
@@ -137,10 +189,6 @@ llama_token sample_temperature_top_k_top_p_min_p(const float * logits, int32_t v
         if (target <= cumulative) return static_cast<llama_token>(indices[static_cast<size_t>(i)]);
     }
     return static_cast<llama_token>(indices[static_cast<size_t>(candidate_count - 1)]);
-}
-
-llama_token sample_temperature_top_k_top_p(const float * logits, int32_t vocab_size, float temperature, int32_t top_k, float top_p, std::mt19937 & rng) {
-    return sample_temperature_top_k_top_p_min_p(logits, vocab_size, temperature, top_k, top_p, 0.0f, rng);
 }
 
 void apply_repetition_penalty(std::vector<float> & logits, const llama_vocab * vocab, const std::vector<llama_token> & past_tokens, float penalty, int32_t penalty_last_n) {
@@ -160,11 +208,7 @@ void apply_repetition_penalty(std::vector<float> & logits, const llama_vocab * v
     }
 }
 
-std::string format_metric(double val, int precision) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.*f", precision, val);
-    return std::string(buf);
-}
+std::string format_metric(double val, int precision) { char buf[64]; std::snprintf(buf, sizeof(buf), "%.*f", precision, val); return std::string(buf); }
 
 std::string piece_for_token(const llama_vocab * vocab, llama_token token) {
     char buf[256] = {};
@@ -184,21 +228,17 @@ std::string stop_tokenization_report(const llama_vocab * vocab, const std::strin
     if (actual < 0) return "STOP SEQUENCE TOKENIZATION: ERROR\n";
     stop_tokens.resize(static_cast<size_t>(actual));
     std::string report = "STOP SEQUENCE TOKENIZATION: " + std::to_string(stop_tokens.size()) + " token(s)\n";
-    for (size_t i = 0; i < stop_tokens.size(); ++i) {
-        const std::string piece = piece_for_token(vocab, stop_tokens[i]);
-        report += "STOP TOKEN " + std::to_string(i) + ": ID=" + std::to_string(stop_tokens[i]) + " PIECE=[" + piece + "]\n";
-    }
+    for (size_t i = 0; i < stop_tokens.size(); ++i) report += "STOP TOKEN " + std::to_string(i) + ": ID=" + std::to_string(stop_tokens[i]) + " PIECE=[" + piece_for_token(vocab, stop_tokens[i]) + "]\n";
     return report;
 }
 
 std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float repetition_penalty = kRepetitionPenalty, int64_t seed = kSeed) {
     std::string prompt_text = prompt_input;
-    if (min_p <= 0.0f && g_default_min_p > 0.0f) {
-        min_p = g_default_min_p;
-    }
-    parse_prompt_min_p(prompt_text, min_p);
-    if (!std::isfinite(min_p) || min_p < 0.0f) min_p = 0.0f;
-    else if (min_p > 1.0f) min_p = 1.0f;
+    if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
+    float typical_p = g_default_typical_p;
+    parse_prompt_sampling_tags(prompt_text, min_p, typical_p);
+    if (!std::isfinite(min_p)) min_p = 0.0f; min_p = std::max(0.0f, std::min(1.0f, min_p));
+    if (!std::isfinite(typical_p)) typical_p = 1.0f; typical_p = std::max(0.0f, std::min(1.0f, typical_p));
     if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) repetition_penalty = 1.0f;
     std::vector<llama_token> tokens;
     if (!tokenize_prompt(prompt_text, tokens)) return "ERROR: llama_tokenize failed";
@@ -219,8 +259,7 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
     const std::string stop_report = stop_tokenization_report(vocab, kStopSequence);
     std::mt19937 rng;
     std::string seed_str;
-    if (seed >= 0) { rng.seed(static_cast<uint32_t>(seed)); seed_str = std::to_string(seed); }
-    else { std::random_device rd; rng.seed(rd()); seed_str = "RANDOM"; }
+    if (seed >= 0) { rng.seed(static_cast<uint32_t>(seed)); seed_str = std::to_string(seed); } else { std::random_device rd; rng.seed(rd()); seed_str = "RANDOM"; }
     std::string generated_text;
     int32_t generated_count = 0;
     std::vector<llama_token> generated_tokens;
@@ -239,7 +278,7 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
             apply_repetition_penalty(penalized_logits, vocab, generated_tokens, repetition_penalty, kPenaltyLastN);
             effective_logits = penalized_logits.data();
         }
-        const llama_token current_token = sample_temperature_top_k_top_p_min_p(effective_logits, vocab_size, temperature, top_k, top_p, min_p, rng);
+        const llama_token current_token = sample_temperature_top_k_top_p_min_p_typical_p(effective_logits, vocab_size, temperature, top_k, top_p, min_p, typical_p, rng);
         if (!first_token_determined) { t_first_token = std::chrono::steady_clock::now(); first_token_determined = true; }
         if (llama_vocab_is_eog(vocab, current_token)) { stop_reason = "EOG"; break; }
         char token_text[256] = {};
@@ -263,10 +302,11 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         total_time_ms = std::chrono::duration<double, std::milli>(t_generation_end - t_prompt_start).count();
         if (generation_time_ms > 0.0 && generated_count > 0) generation_speed = static_cast<double>(generated_count) / (generation_time_ms / 1000.0);
     } else total_time_ms = prompt_processing_time_ms;
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: prompt_tokens=%zu, gen_tokens=%d, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", tokens.size(), generated_count, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
-    return "SUCCESS: temperature + top-k + top-p + min-p + repetition-penalty sampling completed\n"
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: prompt_tokens=%zu, gen_tokens=%d, typical_p=%.2f, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", tokens.size(), generated_count, typical_p, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
+    return "SUCCESS: temperature + top-k + typical-p + top-p + min-p + repetition-penalty sampling completed\n"
         "TEMPERATURE: " + std::to_string(temperature) + "\n"
         "TOP-K: " + std::to_string(top_k) + "\n"
+        "TYPICAL-P: " + std::to_string(typical_p) + "\n"
         "TOP-P: " + std::to_string(top_p) + "\n"
         "MIN-P: " + std::to_string(min_p) + "\n"
         "REPETITION PENALTY: " + std::to_string(repetition_penalty) + "\n"
@@ -386,6 +426,16 @@ extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeSetMinP(JN
 extern "C" JNIEXPORT jfloat JNICALL Java_com_example_MainActivity_nativeGetMinP(JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     return static_cast<jfloat>(g_default_min_p);
+}
+
+extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeSetTypicalP(JNIEnv* /* env */, jobject /* this */, jfloat typical_p) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_default_typical_p = std::max(0.0f, std::min(1.0f, static_cast<float>(typical_p)));
+}
+
+extern "C" JNIEXPORT jfloat JNICALL Java_com_example_MainActivity_nativeGetTypicalP(JNIEnv* /* env */, jobject /* this */) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    return static_cast<jfloat>(g_default_typical_p);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeUnloadModel(JNIEnv* /* env */, jobject /* this */) {
