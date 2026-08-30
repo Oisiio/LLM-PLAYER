@@ -52,34 +52,6 @@ bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & toke
     return !tokens.empty();
 }
 
-void log_stop_sequence_tokenization(const llama_vocab * vocab) {
-    if (vocab == nullptr) return;
-    constexpr const char * kStopSequence = "<END>";
-    std::vector<llama_token> ids;
-    const int32_t required_signed = llama_tokenize(vocab, kStopSequence, 5, nullptr, 0, false, false);
-    if (required_signed >= 0) {
-        __android_log_print(ANDROID_LOG_INFO, kLogTag, "STOP TOKENIZATION: unexpected tokenize result=%d", required_signed);
-        return;
-    }
-    ids.resize(static_cast<size_t>(-required_signed));
-    const int32_t actual = llama_tokenize(vocab, kStopSequence, 5, ids.data(), static_cast<int32_t>(ids.size()), false, false);
-    if (actual < 0) {
-        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "STOP TOKENIZATION: llama_tokenize failed");
-        return;
-    }
-    ids.resize(static_cast<size_t>(actual));
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "STOP TOKENIZATION: <END> -> %d token(s)", actual);
-    for (int32_t i = 0; i < actual; ++i) {
-        char piece[256] = {};
-        const int32_t len = llama_token_to_piece(vocab, ids[static_cast<size_t>(i)], piece, static_cast<int32_t>(sizeof(piece)), 0, true);
-        if (len >= 0) {
-            __android_log_print(ANDROID_LOG_INFO, kLogTag, "STOP TOKEN %d: id=%d piece=[%.*s]", i, static_cast<int>(ids[static_cast<size_t>(i)]), len, piece);
-        } else {
-            __android_log_print(ANDROID_LOG_INFO, kLogTag, "STOP TOKEN %d: id=%d piece=<ERROR>", i, static_cast<int>(ids[static_cast<size_t>(i)]));
-        }
-    }
-}
-
 llama_token sample_temperature_top_k_top_p(const float * logits, int32_t vocab_size, float temperature, int32_t top_k, float top_p, std::mt19937 & rng) {
     if (vocab_size <= 0) return 0;
     top_k = std::max<int32_t>(1, std::min<int32_t>(top_k, vocab_size));
@@ -146,6 +118,31 @@ std::string format_metric(double val, int precision) {
     return std::string(buf);
 }
 
+std::string piece_for_token(const llama_vocab * vocab, llama_token token) {
+    char buf[256] = {};
+    const int32_t len = llama_token_to_piece(vocab, token, buf, static_cast<int32_t>(sizeof(buf)), 0, true);
+    if (len < 0) return "<ERROR>";
+    return std::string(buf, static_cast<size_t>(len));
+}
+
+std::string stop_tokenization_report(const llama_vocab * vocab, const std::string & stop_sequence) {
+    std::vector<llama_token> stop_tokens;
+    const int32_t required_signed = llama_tokenize(vocab, stop_sequence.c_str(), static_cast<int32_t>(stop_sequence.size()), nullptr, 0, false, false);
+    if (required_signed >= 0) return "STOP SEQUENCE TOKENIZATION: ERROR\n";
+    const int32_t required = -required_signed;
+    if (required <= 0) return "STOP SEQUENCE TOKENIZATION: 0 token(s)\n";
+    stop_tokens.resize(static_cast<size_t>(required));
+    const int32_t actual = llama_tokenize(vocab, stop_sequence.c_str(), static_cast<int32_t>(stop_sequence.size()), stop_tokens.data(), required, false, false);
+    if (actual < 0) return "STOP SEQUENCE TOKENIZATION: ERROR\n";
+    stop_tokens.resize(static_cast<size_t>(actual));
+    std::string report = "STOP SEQUENCE TOKENIZATION: " + std::to_string(stop_tokens.size()) + " token(s)\n";
+    for (size_t i = 0; i < stop_tokens.size(); ++i) {
+        const std::string piece = piece_for_token(vocab, stop_tokens[i]);
+        report += "STOP TOKEN " + std::to_string(i) + ": ID=" + std::to_string(stop_tokens[i]) + " PIECE=[" + piece + "]\n";
+    }
+    return report;
+}
+
 std::string generate_sampling_locked(const std::string & prompt_text, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float repetition_penalty = kRepetitionPenalty, int64_t seed = kSeed) {
     if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) repetition_penalty = 1.0f;
     std::vector<llama_token> tokens;
@@ -164,16 +161,18 @@ std::string generate_sampling_locked(const std::string & prompt_text, float temp
     constexpr int32_t kMaxGenTokens = 128;
     constexpr int32_t kMaxContextTokens = 512;
     constexpr const char * kStopSequence = "<END>";
+    const std::string stop_report = stop_tokenization_report(vocab, kStopSequence);
     std::mt19937 rng;
     std::string seed_str;
-    if (seed >= 0) { rng.seed(static_cast<uint32_t>(seed)); seed_str = std::to_string(seed); } else { std::random_device rd; rng.seed(rd()); seed_str = "RANDOM"; }
+    if (seed >= 0) { rng.seed(static_cast<uint32_t>(seed)); seed_str = std::to_string(seed); }
+    else { std::random_device rd; rng.seed(rd()); seed_str = "RANDOM"; }
     std::string generated_text;
     int32_t generated_count = 0;
     std::vector<llama_token> generated_tokens;
     generated_tokens.reserve(kMaxGenTokens);
     bool first_token_determined = false;
     std::chrono::steady_clock::time_point t_first_token;
-    std::string stop_reason = "UNKNOWN";
+    std::string stop_reason = "MAX_TOKENS";
     for (int32_t i = 0; i < kMaxGenTokens; ++i) {
         if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) { stop_reason = "MAX_CONTEXT"; break; }
         const float * logits = llama_get_logits(g_context);
@@ -194,8 +193,7 @@ std::string generate_sampling_locked(const std::string & prompt_text, float temp
         if (token_length > 0) generated_text.append(token_text, static_cast<size_t>(token_length));
         generated_count++;
         generated_tokens.push_back(current_token);
-        const std::string stop_sequence = kStopSequence;
-        const size_t stop_pos = generated_text.find(stop_sequence);
+        const size_t stop_pos = generated_text.find(kStopSequence);
         if (stop_pos != std::string::npos) { generated_text.erase(stop_pos); stop_reason = "STOP_SEQUENCE"; break; }
         if (generated_count >= kMaxGenTokens) { stop_reason = "MAX_TOKENS"; break; }
         llama_token next_token = current_token;
@@ -221,20 +219,19 @@ std::string generate_sampling_locked(const std::string & prompt_text, float temp
         "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
         "SEED: " + seed_str + "\n"
         "STOP REASON: " + stop_reason + "\n"
-        "PROMPT PROCESSING TIME: " + format_metric(prompt_processing_time_ms, 2) + " ms\n"
-        "TTFT: " + format_metric(ttft_ms, 2) + " ms\n"
-        "GENERATION TIME: " + format_metric(generation_time_ms, 2) + " ms\n"
-        "TOTAL TIME: " + format_metric(total_time_ms, 2) + " ms\n"
-        "GENERATION SPEED: " + format_metric(generation_speed, 2) + " tokens/sec\n"
-        "GENERATED TEXT: " + generated_text;
+        + stop_report
+        + "PROMPT PROCESSING TIME: " + format_metric(prompt_processing_time_ms, 2) + " ms\n"
+        + "TTFT: " + format_metric(ttft_ms, 2) + " ms\n"
+        + "GENERATION TIME: " + format_metric(generation_time_ms, 2) + " ms\n"
+        + "TOTAL TIME: " + format_metric(total_time_ms, 2) + " ms\n"
+        + "GENERATION SPEED: " + format_metric(generation_speed, 2) + " tokens/sec\n"
+        + "GENERATED TEXT: " + generated_text;
 }
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_stringFromJNI(JNIEnv* env, jobject /* this */) { return env->NewStringUTF("Hello from native C++"); }
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_stringFromJNI(JNIEnv* env, jobject /* this */) { return env->NewStringUTF("Hello from native C++"); }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeLoadModel(JNIEnv* env, jobject /* this */, jstring model_path) {
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeLoadModel(JNIEnv* env, jobject /* this */, jstring model_path) {
     if (model_path == nullptr) return env->NewStringUTF("ERROR: model path is null");
     const char * path = env->GetStringUTFChars(model_path, nullptr);
     if (path == nullptr) return env->NewStringUTF("ERROR: failed to read model path");
@@ -255,20 +252,17 @@ Java_com_example_MainActivity_nativeLoadModel(JNIEnv* env, jobject /* this */, j
     g_context = llama_init_from_model(g_model, context_params);
     env->ReleaseStringUTFChars(model_path, path);
     if (g_context == nullptr) { llama_model_free(g_model); g_model = nullptr; return env->NewStringUTF("ERROR: model loaded, but llama_init_from_model failed"); }
-    log_stop_sequence_tokenization(llama_model_get_vocab(g_model));
     return env->NewStringUTF("SUCCESS: GGUF model + context loaded");
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* this */) {
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked("こんにちは。短く自己紹介してください。");
     return env->NewStringUTF(result.c_str());
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, jstring prompt) {
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, jstring prompt) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
     if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
@@ -280,8 +274,7 @@ Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, 
     return env->NewStringUTF(result.c_str());
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeGenerateWithTemperature(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature) {
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateWithTemperature(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
     if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
@@ -293,8 +286,7 @@ Java_com_example_MainActivity_nativeGenerateWithTemperature(JNIEnv* env, jobject
     return env->NewStringUTF(result.c_str());
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeGenerateWithTemperatureAndTopK(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k) {
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateWithTemperatureAndTopK(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
     if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
@@ -306,8 +298,7 @@ Java_com_example_MainActivity_nativeGenerateWithTemperatureAndTopK(JNIEnv* env, 
     return env->NewStringUTF(result.c_str());
 }
 
-extern "C" JNIEXPORT jstring JNICALL
-Java_com_example_MainActivity_nativeGenerateWithTemperatureTopKTopP(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p) {
+extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateWithTemperatureTopKTopP(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
     if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
@@ -319,14 +310,12 @@ Java_com_example_MainActivity_nativeGenerateWithTemperatureTopKTopP(JNIEnv* env,
     return env->NewStringUTF(result.c_str());
 }
 
-extern "C" JNIEXPORT void JNICALL
-Java_com_example_MainActivity_nativeUnloadModel(JNIEnv* /* env */, jobject /* this */) {
+extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeUnloadModel(JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     unload_model_locked();
 }
 
-extern "C" JNIEXPORT jboolean JNICALL
-Java_com_example_MainActivity_nativeIsModelLoaded(JNIEnv* /* env */, jobject /* this */) {
+extern "C" JNIEXPORT jboolean JNICALL Java_com_example_MainActivity_nativeIsModelLoaded(JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     return (g_model != nullptr && g_context != nullptr) ? JNI_TRUE : JNI_FALSE;
 }
