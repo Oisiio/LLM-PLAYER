@@ -7,6 +7,7 @@
 #include <mutex>
 #include <random>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "llama.h"
@@ -16,6 +17,8 @@ constexpr char kLogTag[] = "LLM-PLAYER";
 constexpr float kTemperature = 0.7f;
 constexpr int32_t kTopK = 40;
 constexpr float kTopP = 0.9f;
+constexpr float kRepetitionPenalty = 1.1f;
+constexpr int32_t kPenaltyLastN = 64;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -151,11 +154,58 @@ llama_token sample_temperature_top_k_top_p(
     return static_cast<llama_token>(indices[static_cast<size_t>(candidate_count - 1)]);
 }
 
+void apply_repetition_penalty(
+    std::vector<float> & logits,
+    const llama_vocab * vocab,
+    const std::vector<llama_token> & past_tokens,
+    float penalty,
+    int32_t penalty_last_n) {
+    if (penalty <= 1.0f || !std::isfinite(penalty) || past_tokens.empty() || penalty_last_n <= 0) {
+        return;
+    }
+
+    const int32_t vocab_size = static_cast<int32_t>(logits.size());
+    const size_t total_tokens = past_tokens.size();
+    const size_t start_idx = (total_tokens > static_cast<size_t>(penalty_last_n))
+        ? (total_tokens - static_cast<size_t>(penalty_last_n))
+        : 0;
+
+    std::unordered_set<llama_token> penalized;
+    for (size_t i = start_idx; i < total_tokens; ++i) {
+        const llama_token token = past_tokens[i];
+        if (token < 0 || token >= vocab_size) {
+            continue;
+        }
+
+        // Never penalize End-Of-Generation tokens (EOS, EOT, EOM) so the model can terminate naturally.
+        if (vocab != nullptr && llama_vocab_is_eog(vocab, token)) {
+            continue;
+        }
+
+        if (penalized.insert(token).second) {
+            float & logit = logits[static_cast<size_t>(token)];
+            // CTRL paper / llama.cpp formulation:
+            // If logit <= 0, multiply by penalty to make it more negative.
+            // If logit > 0, divide by penalty to reduce its magnitude.
+            if (logit <= 0.0f) {
+                logit *= penalty;
+            } else {
+                logit /= penalty;
+            }
+        }
+    }
+}
+
 std::string generate_sampling_locked(
     const std::string & prompt_text,
     float temperature = kTemperature,
     int32_t top_k = kTopK,
-    float top_p = kTopP) {
+    float top_p = kTopP,
+    float repetition_penalty = kRepetitionPenalty) {
+    if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) {
+        repetition_penalty = 1.0f;
+    }
+
     std::vector<llama_token> tokens;
     if (!tokenize_prompt(prompt_text, tokens)) {
         return "ERROR: llama_tokenize failed";
@@ -188,6 +238,8 @@ std::string generate_sampling_locked(
 
     std::string generated_text;
     int32_t generated_count = 0;
+    std::vector<llama_token> generated_tokens;
+    generated_tokens.reserve(kMaxGenTokens);
 
     for (int32_t i = 0; i < kMaxGenTokens; ++i) {
         if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) {
@@ -199,8 +251,20 @@ std::string generate_sampling_locked(
             return "ERROR: logits are unavailable";
         }
 
+        // Phase 4-E-4: Repetition Penalty.
+        // Apply CTRL / llama.cpp repetition penalty to previously generated tokens (within last N window).
+        // If penalty <= 1.0f or no tokens have been generated yet, raw logits are used with zero allocation.
+        std::vector<float> penalized_logits;
+        const float * effective_logits = logits;
+        if (repetition_penalty > 1.0f && std::isfinite(repetition_penalty) && !generated_tokens.empty()) {
+            penalized_logits.assign(logits, logits + vocab_size);
+            apply_repetition_penalty(
+                penalized_logits, vocab, generated_tokens, repetition_penalty, kPenaltyLastN);
+            effective_logits = penalized_logits.data();
+        }
+
         const llama_token current_token = sample_temperature_top_k_top_p(
-            logits, vocab_size, temperature, top_k, top_p, rng);
+            effective_logits, vocab_size, temperature, top_k, top_p, rng);
 
         // Phase 4-E-2: Stop generation if the token is an End-Of-Generation (EOG) token.
         // In llama.cpp, llama_vocab_is_eog() comprehensively checks special_eog_ids,
@@ -220,6 +284,7 @@ std::string generate_sampling_locked(
         }
 
         generated_count++;
+        generated_tokens.push_back(current_token);
 
         // Phase 4-E-3: Stop Sequence handling.
         // Detect stop sequence across token boundaries in generated UTF-8 text.
@@ -242,10 +307,11 @@ std::string generate_sampling_locked(
         }
     }
 
-    return "SUCCESS: temperature + top-k + top-p sampling completed\n"
+    return "SUCCESS: temperature + top-k + top-p + repetition-penalty sampling completed\n"
         "TEMPERATURE: " + std::to_string(temperature) + "\n"
         "TOP-K: " + std::to_string(top_k) + "\n"
         "TOP-P: " + std::to_string(top_p) + "\n"
+        "REPETITION PENALTY: " + std::to_string(repetition_penalty) + "\n"
         "PROMPT: " + prompt_text + "\n"
         "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
         "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
