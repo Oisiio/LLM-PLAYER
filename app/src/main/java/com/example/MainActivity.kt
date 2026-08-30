@@ -35,6 +35,7 @@ import androidx.compose.material3.CenterAlignedTopAppBar
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
@@ -71,6 +72,10 @@ class MainActivity : ComponentActivity() {
     }
   }
 
+  fun interface TokenCallback {
+    fun onToken(tokenPiece: String): Boolean
+  }
+
   private external fun stringFromJNI(): String
   private external fun nativeLoadModel(modelPath: String): String
   private external fun nativeRunTestInference(): String
@@ -78,6 +83,15 @@ class MainActivity : ComponentActivity() {
   private external fun nativeGenerateWithTemperature(prompt: String, temperature: Float): String
   private external fun nativeGenerateWithTemperatureAndTopK(prompt: String, temperature: Float, topK: Int): String
   private external fun nativeGenerateWithTemperatureTopKTopP(prompt: String, temperature: Float, topK: Int, topP: Float): String
+  private external fun nativeGenerateWithTemperatureTopKTopPMinP(prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float): String
+  private external fun nativeGenerateStreaming(
+    prompt: String,
+    temperature: Float,
+    topK: Int,
+    topP: Float,
+    minP: Float,
+    callback: TokenCallback?
+  ): String
   private external fun nativeUnloadModel()
   private external fun nativeIsModelLoaded(): Boolean
 
@@ -90,6 +104,7 @@ class MainActivity : ComponentActivity() {
   private var topKText by mutableStateOf("40")
   private var topPText by mutableStateOf("0.9")
   private var isLoading by mutableStateOf(false)
+  private var isCancelRequested = false
 
   private val openModelLauncher = registerForActivityResult(
     ActivityResultContracts.OpenDocument()
@@ -158,6 +173,37 @@ class MainActivity : ComponentActivity() {
               promptStatus = result
               isLoading = false
             }
+          },
+          onSendPromptStreaming = {
+            isLoading = true
+            isCancelRequested = false
+            promptStatus = "Streaming受信待機中...\n"
+            lifecycleScope.launch {
+              val temp = temperatureText.toFloatOrNull() ?: 0.7f
+              val topK = topKText.toIntOrNull() ?: 40
+              val topP = topPText.toFloatOrNull() ?: 0.9f
+              val streamBuilder = StringBuilder()
+              var tokenCount = 0
+              val result = withContext(Dispatchers.Default) {
+                nativeGenerateStreaming(promptText, temp, topK, topP, 0.0f) { tokenPiece ->
+                  if (isCancelRequested) {
+                    return@nativeGenerateStreaming false
+                  }
+                  tokenCount++
+                  streamBuilder.append(tokenPiece)
+                  val currentText = streamBuilder.toString()
+                  lifecycleScope.launch(Dispatchers.Main) {
+                    promptStatus = "[STREAMING (${tokenCount} tokens)]\n$currentText"
+                  }
+                  true
+                }
+              }
+              promptStatus = result
+              isLoading = false
+            }
+          },
+          onCancelGeneration = {
+            isCancelRequested = true
           }
         )
       }
@@ -236,7 +282,9 @@ fun LocalLLMApp(
   onPromptChange: (String) -> Unit = {},
   onSelectModel: () -> Unit = {},
   onRunInference: () -> Unit = {},
-  onSendPrompt: () -> Unit = {}
+  onSendPrompt: () -> Unit = {},
+  onSendPromptStreaming: () -> Unit = {},
+  onCancelGeneration: () -> Unit = {}
 ) {
   Scaffold(
     modifier = Modifier.fillMaxSize(),
@@ -378,12 +426,34 @@ fun LocalLLMApp(
           )
 
           Spacer(modifier = Modifier.height(12.dp))
-          Button(
-            onClick = onSendPrompt,
-            enabled = !isLoading && promptText.isNotBlank(),
-            modifier = Modifier.fillMaxWidth().testTag("send_prompt_button")
+          Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
           ) {
-            Text("PromptをJNIへ送信")
+            Button(
+              onClick = onSendPrompt,
+              enabled = !isLoading && promptText.isNotBlank(),
+              modifier = Modifier.weight(1f).testTag("send_prompt_button")
+            ) {
+              Text("一括送信")
+            }
+            Button(
+              onClick = onSendPromptStreaming,
+              enabled = !isLoading && promptText.isNotBlank(),
+              modifier = Modifier.weight(1f).testTag("send_streaming_button")
+            ) {
+              Text("Streaming送信")
+            }
+          }
+
+          if (isLoading) {
+            Spacer(modifier = Modifier.height(8.dp))
+            OutlinedButton(
+              onClick = onCancelGeneration,
+              modifier = Modifier.fillMaxWidth().testTag("cancel_generation_button")
+            ) {
+              Text("生成を中断 (Cancel)")
+            }
           }
 
           Spacer(modifier = Modifier.height(12.dp))
