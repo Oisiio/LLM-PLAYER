@@ -64,19 +64,15 @@ void parse_prompt_sampling_tags(std::string & prompt, float & min_p, float & typ
     while (!key.empty() && (key.back() == ' ' || key.back() == '\t')) key.pop_back();
     try {
         const float parsed = std::stof(val);
-        if (key == "min_p" || key == "min-p" || key == "Min-P" || key == "minP") {
-            min_p = std::max(0.0f, std::min(1.0f, parsed));
-        } else if (key == "typical_p" || key == "typical-p" || key == "Typical-P" || key == "typicalP") {
-            typical_p = std::max(0.0f, std::min(1.0f, parsed));
-        } else {
-            return;
-        }
+        if (key == "min_p" || key == "min-p" || key == "Min-P" || key == "minP") min_p = std::max(0.0f, std::min(1.0f, parsed));
+        else if (key == "typical_p" || key == "typical-p" || key == "Typical-P" || key == "typicalP") typical_p = std::max(0.0f, std::min(1.0f, parsed));
+        else return;
         prompt = prompt.substr(close_pos + 1);
         while (!prompt.empty() && (prompt.front() == ' ' || prompt.front() == '\t')) prompt.erase(0, 1);
     } catch (...) {}
 }
 
-llama_token sample_temperature_top_k_top_p_min_p_typical_p(const float * logits, int32_t vocab_size, float temperature, int32_t top_k, float top_p, float min_p, float typical_p, std::mt19937 & rng) {
+llama_token sample_with_sampling_filters(const float * logits, int32_t vocab_size, float temperature, int32_t top_k, float top_p, float min_p, float typical_p, std::mt19937 & rng) {
     if (vocab_size <= 0) return 0;
     top_k = std::max<int32_t>(1, std::min<int32_t>(top_k, vocab_size));
     top_p = std::max(0.0f, std::min(1.0f, top_p));
@@ -92,8 +88,7 @@ llama_token sample_temperature_top_k_top_p_min_p_typical_p(const float * logits,
     std::vector<double> probabilities(static_cast<size_t>(top_k));
     double probability_sum = 0.0;
     for (int32_t i = 0; i < top_k; ++i) {
-        const int32_t token_index = indices[static_cast<size_t>(i)];
-        const double scaled = (static_cast<double>(logits[token_index]) - max_logit) / temperature;
+        const double scaled = (static_cast<double>(logits[indices[static_cast<size_t>(i)]]) - max_logit) / temperature;
         const double probability = std::exp(scaled);
         probabilities[static_cast<size_t>(i)] = probability;
         probability_sum += probability;
@@ -101,94 +96,65 @@ llama_token sample_temperature_top_k_top_p_min_p_typical_p(const float * logits,
     if (!(probability_sum > 0.0) || !std::isfinite(probability_sum)) return static_cast<llama_token>(indices[0]);
     for (double & p : probabilities) p /= probability_sum;
 
-    int32_t candidate_count = top_k;
-
-    // Locally Typical Sampling: retain tokens closest to the model's
-    // expected information content (entropy), until cumulative mass reaches p.
+    // Typical-P: compute entropy and retain tokens whose surprisal is closest
+    // to the expected information content. Non-typical candidates are assigned
+    // zero probability while preserving the original probability order.
     if (typical_p < 1.0f) {
         double entropy = 0.0;
         for (double p : probabilities) if (p > 0.0) entropy -= p * std::log(p);
-        struct TypicalCandidate { int32_t index; double distance; double probability; };
-        std::vector<TypicalCandidate> typical;
-        typical.reserve(static_cast<size_t>(top_k));
-        for (int32_t i = 0; i < top_k; ++i) {
-            const double p = probabilities[static_cast<size_t>(i)];
-            if (p <= 0.0) continue;
-            const double surprisal = -std::log(p);
-            typical.push_back({i, std::fabs(surprisal - entropy), p});
-        }
-        std::stable_sort(typical.begin(), typical.end(), [](const TypicalCandidate & a, const TypicalCandidate & b) {
-            if (a.distance != b.distance) return a.distance < b.distance;
-            return a.index < b.index;
+        std::vector<int32_t> order(static_cast<size_t>(top_k));
+        for (int32_t i = 0; i < top_k; ++i) order[static_cast<size_t>(i)] = i;
+        std::stable_sort(order.begin(), order.end(), [&probabilities, entropy](int32_t a, int32_t b) {
+            const double da = std::fabs(-std::log(probabilities[static_cast<size_t>(a)]) - entropy);
+            const double db = std::fabs(-std::log(probabilities[static_cast<size_t>(b)]) - entropy);
+            if (da != db) return da < db;
+            return a < b;
         });
         std::vector<bool> keep(static_cast<size_t>(top_k), false);
         double cumulative = 0.0;
-        for (const auto & c : typical) {
-            keep[static_cast<size_t>(c.index)] = true;
-            cumulative += c.probability;
+        for (int32_t pos : order) {
+            const double p = probabilities[static_cast<size_t>(pos)];
+            keep[static_cast<size_t>(pos)] = true;
+            cumulative += p;
             if (cumulative >= static_cast<double>(typical_p)) break;
         }
-        // Rebuild in original logit order so Top-P and Min-P retain their
-        // established deterministic ordering.
-        int32_t kept = 0;
-        for (int32_t i = 0; i < top_k; ++i) if (keep[static_cast<size_t>(i)]) indices[static_cast<size_t>(kept++)] = indices[static_cast<size_t>(i)];
-        candidate_count = std::max<int32_t>(1, kept);
-        std::vector<double> filtered(static_cast<size_t>(candidate_count));
-        for (int32_t i = 0; i < candidate_count; ++i) {
-            const int32_t token_index = indices[static_cast<size_t>(i)];
-            auto it = std::find_if(typical.begin(), typical.end(), [token_index](const TypicalCandidate & c) { return c.index >= 0; });
-            (void) it;
-            // Map back through the original top-k indices/probabilities.
-            for (int32_t j = 0; j < top_k; ++j) {
-                if (indices[static_cast<size_t>(i)] == indices[static_cast<size_t>(j)] && j < candidate_count) { filtered[static_cast<size_t>(i)] = probabilities[static_cast<size_t>(j)]; break; }
-            }
-        }
-        // The mapping above is unnecessary for selection; reconstruct directly
-        // from logits to guarantee correct probabilities after reordering.
-        double filtered_sum = 0.0;
-        for (int32_t i = 0; i < candidate_count; ++i) {
-            const int32_t token = indices[static_cast<size_t>(i)];
-            for (int32_t j = 0; j < top_k; ++j) if (token == indices[static_cast<size_t>(j)]) { filtered[static_cast<size_t>(i)] = probabilities[static_cast<size_t>(j)]; break; }
-            filtered_sum += filtered[static_cast<size_t>(i)];
-        }
-        if (filtered_sum > 0.0) for (double & p : filtered) p /= filtered_sum;
-        probabilities.swap(filtered);
+        for (int32_t i = 0; i < top_k; ++i) if (!keep[static_cast<size_t>(i)]) probabilities[static_cast<size_t>(i)] = 0.0;
     }
 
-    // At this point probabilities/indices contain the Typical-P candidate set.
+    // Top-P and Min-P operate on the surviving candidates. The original
+    // ordering remains descending by probability, so no additional sort is needed.
     if (top_p < 1.0f) {
         double cumulative = 0.0;
-        int32_t kept = 0;
-        for (int32_t i = 0; i < candidate_count; ++i) {
-            cumulative += probabilities[static_cast<size_t>(i)];
-            ++kept;
-            if (cumulative >= static_cast<double>(top_p)) break;
+        bool reached = false;
+        for (int32_t i = 0; i < top_k; ++i) {
+            const double p = probabilities[static_cast<size_t>(i)];
+            if (p <= 0.0) continue;
+            if (!reached) {
+                cumulative += p;
+                if (cumulative >= static_cast<double>(top_p)) reached = true;
+            } else probabilities[static_cast<size_t>(i)] = 0.0;
         }
-        candidate_count = std::max<int32_t>(1, kept);
     }
 
     if (min_p > 0.0f) {
-        const double max_prob = probabilities[0];
+        double max_prob = 0.0;
+        for (double p : probabilities) max_prob = std::max(max_prob, p);
         const double threshold = max_prob * static_cast<double>(min_p);
-        int32_t kept = 0;
-        for (int32_t i = 0; i < candidate_count; ++i) {
-            if (probabilities[static_cast<size_t>(i)] < threshold && kept >= 1) break;
-            ++kept;
-        }
-        candidate_count = std::max<int32_t>(1, kept);
+        for (double & p : probabilities) if (p > 0.0 && p < threshold) p = 0.0;
     }
 
     double filtered_probability_sum = 0.0;
-    for (int32_t i = 0; i < candidate_count; ++i) filtered_probability_sum += probabilities[static_cast<size_t>(i)];
+    for (double p : probabilities) filtered_probability_sum += p;
     if (!(filtered_probability_sum > 0.0) || !std::isfinite(filtered_probability_sum)) return static_cast<llama_token>(indices[0]);
     std::uniform_real_distribution<double> distribution(0.0, filtered_probability_sum);
     const double target = distribution(rng);
     double cumulative = 0.0;
-    for (int32_t i = 0; i < candidate_count; ++i) {
+    for (int32_t i = 0; i < top_k; ++i) {
         cumulative += probabilities[static_cast<size_t>(i)];
         if (target <= cumulative) return static_cast<llama_token>(indices[static_cast<size_t>(i)]);
     }
-    return static_cast<llama_token>(indices[static_cast<size_t>(candidate_count - 1)]);
+    for (int32_t i = top_k - 1; i >= 0; --i) if (probabilities[static_cast<size_t>(i)] > 0.0) return static_cast<llama_token>(indices[static_cast<size_t>(i)]);
+    return static_cast<llama_token>(indices[0]);
 }
 
 void apply_repetition_penalty(std::vector<float> & logits, const llama_vocab * vocab, const std::vector<llama_token> & past_tokens, float penalty, int32_t penalty_last_n) {
@@ -237,8 +203,10 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
     float typical_p = g_default_typical_p;
     parse_prompt_sampling_tags(prompt_text, min_p, typical_p);
-    if (!std::isfinite(min_p)) min_p = 0.0f; min_p = std::max(0.0f, std::min(1.0f, min_p));
-    if (!std::isfinite(typical_p)) typical_p = 1.0f; typical_p = std::max(0.0f, std::min(1.0f, typical_p));
+    if (!std::isfinite(min_p)) min_p = 0.0f;
+    min_p = std::max(0.0f, std::min(1.0f, min_p));
+    if (!std::isfinite(typical_p)) typical_p = 1.0f;
+    typical_p = std::max(0.0f, std::min(1.0f, typical_p));
     if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) repetition_penalty = 1.0f;
     std::vector<llama_token> tokens;
     if (!tokenize_prompt(prompt_text, tokens)) return "ERROR: llama_tokenize failed";
@@ -278,7 +246,7 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
             apply_repetition_penalty(penalized_logits, vocab, generated_tokens, repetition_penalty, kPenaltyLastN);
             effective_logits = penalized_logits.data();
         }
-        const llama_token current_token = sample_temperature_top_k_top_p_min_p_typical_p(effective_logits, vocab_size, temperature, top_k, top_p, min_p, typical_p, rng);
+        const llama_token current_token = sample_with_sampling_filters(effective_logits, vocab_size, temperature, top_k, top_p, min_p, typical_p, rng);
         if (!first_token_determined) { t_first_token = std::chrono::steady_clock::now(); first_token_determined = true; }
         if (llama_vocab_is_eog(vocab, current_token)) { stop_reason = "EOG"; break; }
         char token_text[256] = {};
