@@ -273,9 +273,11 @@ std::string generate_sampling_locked(
 
     bool first_token_determined = false;
     std::chrono::steady_clock::time_point t_first_token;
+    std::string stop_reason = "UNKNOWN";
 
     for (int32_t i = 0; i < kMaxGenTokens; ++i) {
         if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) {
+            stop_reason = "MAX_CONTEXT";
             break;
         }
 
@@ -310,6 +312,7 @@ std::string generate_sampling_locked(
         // In llama.cpp, llama_vocab_is_eog() comprehensively checks special_eog_ids,
         // which includes EOS (special_eos_id), EOT (special_eot_id), and EOM (special_eom_id).
         if (llama_vocab_is_eog(vocab, current_token)) {
+            stop_reason = "EOG";
             break;
         }
 
@@ -333,10 +336,12 @@ std::string generate_sampling_locked(
         const size_t stop_pos = generated_text.find(stop_sequence);
         if (stop_pos != std::string::npos) {
             generated_text.erase(stop_pos);
+            stop_reason = "STOP_SEQUENCE";
             break;
         }
 
         if (generated_count >= kMaxGenTokens) {
+            stop_reason = "MAX_TOKENS";
             break;
         }
 
@@ -368,10 +373,11 @@ std::string generate_sampling_locked(
     __android_log_print(
         ANDROID_LOG_INFO,
         kLogTag,
-        "Inference metrics: prompt_tokens=%zu, gen_tokens=%d, seed=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec",
+        "Inference metrics: prompt_tokens=%zu, gen_tokens=%d, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec",
         tokens.size(),
         generated_count,
         seed_str.c_str(),
+        stop_reason.c_str(),
         prompt_processing_time_ms,
         ttft_ms,
         generation_time_ms,
@@ -387,6 +393,7 @@ std::string generate_sampling_locked(
         "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
         "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
         "SEED: " + seed_str + "\n"
+        "STOP REASON: " + stop_reason + "\n"
         "PROMPT PROCESSING TIME: " + format_metric(prompt_processing_time_ms, 2) + " ms\n"
         "TTFT: " + format_metric(ttft_ms, 2) + " ms\n"
         "GENERATION TIME: " + format_metric(generation_time_ms, 2) + " ms\n"
