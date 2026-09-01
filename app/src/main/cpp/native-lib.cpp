@@ -198,10 +198,10 @@ std::string stop_tokenization_report(const llama_vocab * vocab, const std::strin
     return report;
 }
 
-std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float repetition_penalty = kRepetitionPenalty, int64_t seed = kSeed) {
+std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float typical_p_override = -1.0f, float repetition_penalty = kRepetitionPenalty, int32_t penalty_last_n = kPenaltyLastN, int64_t seed = kSeed) {
     std::string prompt_text = prompt_input;
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
-    float typical_p = g_default_typical_p;
+    float typical_p = typical_p_override < 0.0f ? g_default_typical_p : typical_p_override;
     parse_prompt_sampling_tags(prompt_text, min_p, typical_p);
     if (!std::isfinite(min_p)) min_p = 0.0f;
     min_p = std::max(0.0f, std::min(1.0f, min_p));
@@ -243,7 +243,7 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         const float * effective_logits = logits;
         if (repetition_penalty > 1.0f && std::isfinite(repetition_penalty) && !generated_tokens.empty()) {
             penalized_logits.assign(logits, logits + vocab_size);
-            apply_repetition_penalty(penalized_logits, vocab, generated_tokens, repetition_penalty, kPenaltyLastN);
+            apply_repetition_penalty(penalized_logits, vocab, generated_tokens, repetition_penalty, penalty_last_n);
             effective_logits = penalized_logits.data();
         }
         const llama_token current_token = sample_with_sampling_filters(effective_logits, vocab_size, temperature, top_k, top_p, min_p, typical_p, rng);
@@ -414,4 +414,19 @@ extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeUnloadMode
 extern "C" JNIEXPORT jboolean JNICALL Java_com_example_MainActivity_nativeIsModelLoaded(JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     return (g_model != nullptr && g_context != nullptr) ? JNI_TRUE : JNI_FALSE;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_MainActivity_nativeGenerateWithSampling(
+        JNIEnv * env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p,
+        jfloat min_p, jfloat typical_p, jfloat repetition_penalty, jint penalty_last_n, jlong seed) {
+    const char * chars = env->GetStringUTFChars(prompt, nullptr);
+    if (chars == nullptr) return env->NewStringUTF("ERROR: prompt unavailable");
+    const std::string result = [&]() {
+        std::lock_guard<std::mutex> lock(g_model_mutex);
+        if (g_model == nullptr || g_context == nullptr) return std::string("ERROR: model is not loaded");
+        return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed);
+    }();
+    env->ReleaseStringUTFChars(prompt, chars);
+    return env->NewStringUTF(result.c_str());
 }
