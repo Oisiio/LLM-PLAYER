@@ -16,7 +16,6 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.*
-import androidx.compose.material3.NavigationBarItem
 import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
@@ -34,7 +33,6 @@ import kotlinx.coroutines.withContext
 private enum class Destination { TALK, AI, AGENT }
 private enum class AiPage { HOME, MODEL, GENERATION }
 
-/** Android presentation layer. Native inference remains owned by native-lib.cpp. */
 class MainActivity : ComponentActivity() {
   companion object { init { System.loadLibrary("localllm_native") } }
 
@@ -131,7 +129,7 @@ private fun PlayerApp(modelStatus: String, modelName: String, output: String, lo
 }
 
 @Composable
-private fun NavItem(target: Destination, selected: Destination, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
+private fun RowScope.NavItem(target: Destination, selected: Destination, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
   NavigationBarItem(selected = target == selected, onClick = onClick, icon = { Icon(icon, null) }, label = { Text(label) })
 }
 
@@ -192,6 +190,6 @@ private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (Samp
   TopAppBar(title = { Text(title) }, navigationIcon = { TextButton(onClick = back) { Text("Back") } })
 }
 
-@Composable private fun SettingCard(title: String, detail: String, click: () -> Unit) = Card(Modifier.fillMaxWidth(), onClick = click) { Column(Modifier.padding(18.dp)) { Text(title, fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
-@Composable private fun ComingSoon(title: String, detail: String) = Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Column(Modifier.padding(18.dp)) { Text("Coming Soon · $title", fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
+@Composable private fun SettingCard(title: String, detail: String, click: () -> Unit) = Card(onClick = click, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text(title, fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
+@Composable private fun ComingSoon(title: String, detail: String) = Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Column(Modifier.padding(18.dp)) { Text("Coming Soon · $title", fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
 @Composable private fun UnavailableScreen(title: String, message: String, footnote: String) = Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Coming Soon", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(message); Text(footnote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
