@@ -16,7 +16,9 @@ import androidx.compose.material.icons.filled.Forum
 import androidx.compose.material.icons.filled.Memory
 import androidx.compose.material.icons.filled.SmartToy
 import androidx.compose.material3.*
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.testTag
@@ -128,8 +130,10 @@ private fun PlayerApp(modelStatus: String, modelName: String, output: String, lo
   }
 }
 
-@Composable private fun NavItem(target: Destination, selected: Destination, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) =
+@Composable
+private fun NavItem(target: Destination, selected: Destination, label: String, icon: androidx.compose.ui.graphics.vector.ImageVector, onClick: () -> Unit) {
   NavigationBarItem(selected = target == selected, onClick = onClick, icon = { Icon(icon, null) }, label = { Text(label) })
+}
 
 @Composable
 private fun AiHome(modelName: String, modelStatus: String, loading: Boolean, openModel: () -> Unit, openGeneration: () -> Unit) {
@@ -159,6 +163,7 @@ private fun ModelScreen(modelName: String, modelStatus: String, loading: Boolean
   }
 }
 
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (SamplingSettings) -> Unit, back: () -> Unit) {
   var prompt by rememberSaveable { mutableStateOf("") }; var temperature by rememberSaveable { mutableStateOf("0.7") }
@@ -181,7 +186,12 @@ private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (Samp
 }
 
 @Composable private fun LabeledInput(label: String, value: String, change: (String) -> Unit, minLines: Int = 1) = OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = minLines)
-@Composable private fun ScreenHeader(title: String, back: () -> Unit) = TopAppBar(title = { Text(title) }, navigationIcon = { TextButton(onClick = back) { Text("Back") } })
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable private fun ScreenHeader(title: String, back: () -> Unit) {
+  TopAppBar(title = { Text(title) }, navigationIcon = { TextButton(onClick = back) { Text("Back") } })
+}
+
 @Composable private fun SettingCard(title: String, detail: String, click: () -> Unit) = Card(Modifier.fillMaxWidth(), onClick = click) { Column(Modifier.padding(18.dp)) { Text(title, fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
 @Composable private fun ComingSoon(title: String, detail: String) = Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Column(Modifier.padding(18.dp)) { Text("Coming Soon · $title", fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
 @Composable private fun UnavailableScreen(title: String, message: String, footnote: String) = Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Coming Soon", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(message); Text(footnote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
