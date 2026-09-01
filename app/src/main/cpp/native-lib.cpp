@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
-#include <functional>
 #include <mutex>
 #include <random>
 #include <string>
@@ -199,7 +198,7 @@ std::string stop_tokenization_report(const llama_vocab * vocab, const std::strin
     return report;
 }
 
-std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float repetition_penalty = kRepetitionPenalty, int64_t seed = kSeed, std::function<bool(const std::string &)> token_callback = nullptr) {
+std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float repetition_penalty = kRepetitionPenalty, int64_t seed = kSeed) {
     std::string prompt_text = prompt_input;
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
     float typical_p = g_default_typical_p;
@@ -253,22 +252,11 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         char token_text[256] = {};
         const int32_t token_length = llama_token_to_piece(vocab, current_token, token_text, static_cast<int32_t>(sizeof(token_text)), 0, true);
         if (token_length < 0) return "ERROR: llama_token_to_piece failed";
-        std::string piece;
-        if (token_length > 0) {
-            piece.assign(token_text, static_cast<size_t>(token_length));
-            generated_text.append(piece);
-        }
+        if (token_length > 0) generated_text.append(token_text, static_cast<size_t>(token_length));
         generated_count++;
         generated_tokens.push_back(current_token);
         const size_t stop_pos = generated_text.find(kStopSequence);
         if (stop_pos != std::string::npos) { generated_text.erase(stop_pos); stop_reason = "STOP_SEQUENCE"; break; }
-        if (token_callback) {
-            const bool continue_gen = token_callback(piece);
-            if (!continue_gen) {
-                stop_reason = "USER_CANCEL";
-                break;
-            }
-        }
         if (generated_count >= kMaxGenTokens) { stop_reason = "MAX_TOKENS"; break; }
         llama_token next_token = current_token;
         llama_batch token_batch = llama_batch_get_one(&next_token, 1);
@@ -427,56 +415,3 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_example_MainActivity_nativeIsMode
     std::lock_guard<std::mutex> lock(g_model_mutex);
     return (g_model != nullptr && g_context != nullptr) ? JNI_TRUE : JNI_FALSE;
 }
-
-extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateStreaming(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p, jfloat min_p, jobject callback) {
-    if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
-    const char * prompt_chars = env->GetStringUTFChars(prompt, nullptr);
-    if (prompt_chars == nullptr) return env->NewStringUTF("ERROR: failed to read prompt");
-    const std::string prompt_text(prompt_chars);
-    env->ReleaseStringUTFChars(prompt, prompt_chars);
-
-    std::lock_guard<std::mutex> lock(g_model_mutex);
-    if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
-
-    jmethodID on_token_method = nullptr;
-    if (callback != nullptr) {
-        jclass callback_class = env->GetObjectClass(callback);
-        if (callback_class != nullptr) {
-            on_token_method = env->GetMethodID(callback_class, "onToken", "(Ljava/lang/String;)Z");
-            if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-                on_token_method = nullptr;
-            }
-            env->DeleteLocalRef(callback_class);
-        }
-    }
-
-    std::function<bool(const std::string &)> token_cb = nullptr;
-    if (callback != nullptr && on_token_method != nullptr) {
-        token_cb = [env, callback, on_token_method](const std::string & piece) -> bool {
-            jstring piece_jstr = env->NewStringUTF(piece.c_str());
-            if (piece_jstr == nullptr) return false;
-            jboolean cont = env->CallBooleanMethod(callback, on_token_method, piece_jstr);
-            env->DeleteLocalRef(piece_jstr);
-            if (env->ExceptionCheck()) {
-                env->ExceptionClear();
-                return false;
-            }
-            return (cont == JNI_TRUE);
-        };
-    }
-
-    const std::string result = generate_sampling_locked(
-        prompt_text,
-        static_cast<float>(temperature),
-        static_cast<int32_t>(top_k),
-        static_cast<float>(top_p),
-        static_cast<float>(min_p),
-        kRepetitionPenalty,
-        kSeed,
-        token_cb
-    );
-
-    return env->NewStringUTF(result.c_str());
-}
-
