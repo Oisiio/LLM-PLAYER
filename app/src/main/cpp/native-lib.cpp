@@ -37,15 +37,37 @@ void unload_model_locked() {
     if (g_model != nullptr) { llama_model_free(g_model); g_model = nullptr; }
 }
 
+bool format_chat_prompt(const std::string & user_prompt, std::string & formatted_prompt, std::string & template_name) {
+    if (g_model == nullptr) return false;
+    const char * tmpl = llama_model_chat_template(g_model, nullptr);
+    if (tmpl == nullptr || tmpl[0] == '\\0') {
+        formatted_prompt = user_prompt;
+        template_name = "NONE";
+        return true;
+    }
+
+    llama_chat_message message = { "user", user_prompt.c_str() };
+    int32_t required = llama_chat_apply_template(tmpl, &message, 1, true, nullptr, 0);
+    if (required < 0) return false;
+
+    std::vector<char> buffer(static_cast<size_t>(required) + 1u);
+    int32_t actual = llama_chat_apply_template(tmpl, &message, 1, true, buffer.data(), static_cast<int32_t>(buffer.size()));
+    if (actual < 0 || actual > static_cast<int32_t>(buffer.size())) return false;
+
+    formatted_prompt.assign(buffer.data(), static_cast<size_t>(actual));
+    template_name = tmpl;
+    return !formatted_prompt.empty();
+}
+
 bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & tokens) {
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
     if (vocab == nullptr) return false;
-    const int32_t required_signed = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), nullptr, 0, true, false);
+    const int32_t required_signed = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), nullptr, 0, false, true);
     if (required_signed >= 0) return false;
     const int32_t required = -required_signed;
     if (required <= 0) return false;
     tokens.resize(static_cast<size_t>(required));
-    const int32_t actual = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(), required, true, false);
+    const int32_t actual = llama_tokenize(vocab, prompt.c_str(), static_cast<int32_t>(prompt.size()), tokens.data(), required, false, true);
     if (actual < 0) { tokens.clear(); return false; }
     if (actual != required) tokens.resize(static_cast<size_t>(actual));
     return !tokens.empty();
@@ -203,13 +225,16 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
     float typical_p = typical_p_override < 0.0f ? g_default_typical_p : typical_p_override;
     parse_prompt_sampling_tags(prompt_text, min_p, typical_p);
+    std::string formatted_prompt;
+    std::string chat_template;
+    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template)) return "ERROR: llama_chat_apply_template failed";
     if (!std::isfinite(min_p)) min_p = 0.0f;
     min_p = std::max(0.0f, std::min(1.0f, min_p));
     if (!std::isfinite(typical_p)) typical_p = 1.0f;
     typical_p = std::max(0.0f, std::min(1.0f, typical_p));
     if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) repetition_penalty = 1.0f;
     std::vector<llama_token> tokens;
-    if (!tokenize_prompt(prompt_text, tokens)) return "ERROR: llama_tokenize failed";
+    if (!tokenize_prompt(formatted_prompt, tokens)) return "ERROR: llama_tokenize failed";
     if (tokens.empty() || tokens.size() > 512) return "ERROR: invalid token count";
     llama_memory_clear(llama_get_memory(g_context), true);
     const auto t_prompt_start = std::chrono::steady_clock::now();
@@ -270,7 +295,7 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         total_time_ms = std::chrono::duration<double, std::milli>(t_generation_end - t_prompt_start).count();
         if (generation_time_ms > 0.0 && generated_count > 0) generation_speed = static_cast<double>(generated_count) / (generation_time_ms / 1000.0);
     } else total_time_ms = prompt_processing_time_ms;
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: prompt_tokens=%zu, gen_tokens=%d, typical_p=%.2f, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", tokens.size(), generated_count, typical_p, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: template=%s, prompt_tokens=%zu, gen_tokens=%d, typical_p=%.2f, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", chat_template.c_str(), tokens.size(), generated_count, typical_p, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
     return "SUCCESS: temperature + top-k + typical-p + top-p + min-p + repetition-penalty sampling completed\n"
         "TEMPERATURE: " + std::to_string(temperature) + "\n"
         "TOP-K: " + std::to_string(top_k) + "\n"
@@ -278,7 +303,9 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         "TOP-P: " + std::to_string(top_p) + "\n"
         "MIN-P: " + std::to_string(min_p) + "\n"
         "REPETITION PENALTY: " + std::to_string(repetition_penalty) + "\n"
-        "PROMPT: " + prompt_text + "\n"
+        "CHAT TEMPLATE: " + chat_template + "\n"
+        "RAW PROMPT: " + prompt_text + "\n"
+        "FORMATTED PROMPT: " + formatted_prompt + "\n"
         "PROMPT TOKEN COUNT: " + std::to_string(tokens.size()) + "\n"
         "GENERATED TOKEN COUNT: " + std::to_string(generated_count) + "\n"
         "SEED: " + seed_str + "\n"
