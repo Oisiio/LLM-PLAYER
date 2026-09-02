@@ -18,7 +18,7 @@ set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 # Google AI Studio may only have the repository checkout, where the
 # third_party/llama.cpp directory is intentionally incomplete. In that case,
 # fetch the exact same pinned llama.cpp revision used by CI.
-set(LLAMA_CPP_COMMIT "4e97ac86ebe2c4cb8212d98d2641ad6768810896")
+set(LLAMA_CPP_COMMIT "0f3a71be15af836d277c9f918adfafb45732677e")
 set(LLAMA_CPP_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/llama.cpp")
 
 if(NOT EXISTS "${LLAMA_CPP_SOURCE_DIR}/ggml/CMakeLists.txt" OR
