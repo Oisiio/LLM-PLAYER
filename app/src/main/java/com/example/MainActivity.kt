@@ -24,6 +24,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.example.talk.TalkRepository
+import com.example.talk.TalkScreen
 import com.example.ui.theme.MyApplicationTheme
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +47,7 @@ class MainActivity : ComponentActivity() {
     enableThinking: Boolean
   ): String
 
+  private val talkRepository by lazy { TalkRepository(applicationContext) }
   private var modelStatus by mutableStateOf("No model loaded")
   private var selectedModelName by mutableStateOf("No GGUF model selected")
   private var output by mutableStateOf("Select and load a GGUF model to begin.")
@@ -77,7 +80,8 @@ class MainActivity : ComponentActivity() {
               }
               loading = false
             }
-          }
+          },
+          talkRepository = talkRepository
         )
       }
     }
@@ -96,7 +100,11 @@ class MainActivity : ComponentActivity() {
     } catch (error: Throwable) { "ERROR: ${error.message ?: error.javaClass.simpleName}" }
   }
 
-  override fun onDestroy() { runCatching { nativeUnloadModel() }; super.onDestroy() }
+  override fun onDestroy() {
+    runCatching { talkRepository.close() }
+    runCatching { nativeUnloadModel() }
+    super.onDestroy()
+  }
 }
 
 private data class SamplingSettings(
@@ -107,7 +115,8 @@ private data class SamplingSettings(
 
 @Composable
 private fun PlayerApp(modelStatus: String, modelName: String, output: String, loading: Boolean,
-  onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit) {
+  onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit,
+  talkRepository: TalkRepository) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
   var aiPage by rememberSaveable { mutableStateOf(AiPage.HOME) }
   Scaffold(
@@ -119,7 +128,7 @@ private fun PlayerApp(modelStatus: String, modelName: String, output: String, lo
   ) { padding ->
     Surface(Modifier.fillMaxSize().padding(padding)) {
       when (destination) {
-        Destination.TALK -> UnavailableScreen("Talk", "Character chat will appear here when the native streaming conversation API is available.", "Talk intentionally has no Thinking or long-term Memory.")
+        Destination.TALK -> TalkScreen(talkRepository)
         Destination.AGENT -> UnavailableScreen("Agent", "Agent runs, tools, and memory require a native harness and are not available in this build.", "No tool controls are exposed until they can execute safely.")
         Destination.AI -> when (aiPage) {
           AiPage.HOME -> AiHome(modelName, modelStatus, loading, { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION })
@@ -210,4 +219,4 @@ private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (Samp
 
 @Composable private fun SettingCard(title: String, detail: String, click: () -> Unit) = Card(onClick = click, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text(title, fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
 @Composable private fun ComingSoon(title: String, detail: String) = Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Column(Modifier.padding(18.dp)) { Text("Coming Soon · $title", fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
-@Composable private fun UnavailableScreen(title: String, message: String, footnote: String) = Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Coming Soon", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(message); Text(footnote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable private fun UnavailableScreen(title: String, message: String, footnote: String) = Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Coming Soon", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(message); Text(footnote, style = MaterialTheme.colorScheme.onSurfaceVariant) }
