@@ -43,7 +43,8 @@ void unload_model_locked() {
 bool format_chat_prompt(const std::string & user_prompt,
                         std::string & formatted_prompt,
                         std::string & template_name,
-                        std::vector<std::string> & additional_stops) {
+                        std::vector<std::string> & additional_stops,
+                        bool enable_thinking = false) {
     if (g_model == nullptr) return false;
 
     if (!g_chat_templates) {
@@ -67,6 +68,7 @@ bool format_chat_prompt(const std::string & user_prompt,
         inputs.messages.push_back(msg);
         inputs.add_generation_prompt = true;
         inputs.use_jinja = true;
+        inputs.enable_thinking = enable_thinking;
 
         const auto chat_params = common_chat_templates_apply(g_chat_templates.get(), inputs);
         formatted_prompt = chat_params.prompt;
@@ -240,7 +242,7 @@ std::string stop_tokenization_report(const llama_vocab * vocab, const std::strin
     return report;
 }
 
-std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float typical_p_override = -1.0f, float repetition_penalty = kRepetitionPenalty, int32_t penalty_last_n = kPenaltyLastN, int64_t seed = kSeed) {
+std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float typical_p_override = -1.0f, float repetition_penalty = kRepetitionPenalty, int32_t penalty_last_n = kPenaltyLastN, int64_t seed = kSeed, bool enable_thinking = false) {
     std::string prompt_text = prompt_input;
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
     float typical_p = typical_p_override < 0.0f ? g_default_typical_p : typical_p_override;
@@ -248,7 +250,7 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
     std::string formatted_prompt;
     std::string chat_template;
     std::vector<std::string> additional_stops;
-    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops)) return "ERROR: chat_template_apply failed";
+    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops, enable_thinking)) return "ERROR: chat_template_apply failed";
     if (!std::isfinite(min_p)) min_p = 0.0f;
     min_p = std::max(0.0f, std::min(1.0f, min_p));
     if (!std::isfinite(typical_p)) typical_p = 1.0f;
@@ -480,13 +482,14 @@ extern "C" JNIEXPORT jboolean JNICALL Java_com_example_MainActivity_nativeIsMode
 extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_MainActivity_nativeGenerateWithSampling(
         JNIEnv * env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p,
-        jfloat min_p, jfloat typical_p, jfloat repetition_penalty, jint penalty_last_n, jlong seed) {
+        jfloat min_p, jfloat typical_p, jfloat repetition_penalty, jint penalty_last_n, jlong seed,
+        jboolean enable_thinking) {
     const char * chars = env->GetStringUTFChars(prompt, nullptr);
     if (chars == nullptr) return env->NewStringUTF("ERROR: prompt unavailable");
     const std::string result = [&]() {
         std::lock_guard<std::mutex> lock(g_model_mutex);
         if (g_model == nullptr || g_context == nullptr) return std::string("ERROR: model is not loaded");
-        return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed);
+        return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed, enable_thinking == JNI_TRUE);
     }();
     env->ReleaseStringUTFChars(prompt, chars);
     return env->NewStringUTF(result.c_str());

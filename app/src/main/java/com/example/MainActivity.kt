@@ -41,7 +41,8 @@ class MainActivity : ComponentActivity() {
   private external fun nativeIsModelLoaded(): Boolean
   private external fun nativeGenerateWithSampling(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
-    typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long
+    typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+    enableThinking: Boolean
   ): String
 
   private var modelStatus by mutableStateOf("No model loaded")
@@ -71,7 +72,8 @@ class MainActivity : ComponentActivity() {
               output = withContext(Dispatchers.Default) {
                 if (!nativeIsModelLoaded()) "ERROR: Load a GGUF model in AI > Model first."
                 else nativeGenerateWithSampling(settings.prompt, settings.temperature, settings.topK, settings.topP,
-                  settings.minP, settings.typicalP, settings.repetitionPenalty, settings.penaltyLastN, settings.seed)
+                  settings.minP, settings.typicalP, settings.repetitionPenalty, settings.penaltyLastN, settings.seed,
+                  settings.enableThinking)
               }
               loading = false
             }
@@ -99,7 +101,8 @@ class MainActivity : ComponentActivity() {
 
 private data class SamplingSettings(
   val prompt: String, val temperature: Float, val topK: Int, val topP: Float, val minP: Float,
-  val typicalP: Float, val repetitionPenalty: Float, val penaltyLastN: Int, val seed: Long
+  val typicalP: Float, val repetitionPenalty: Float, val penaltyLastN: Int, val seed: Long,
+  val enableThinking: Boolean = false
 )
 
 @Composable
@@ -139,9 +142,8 @@ private fun AiHome(modelName: String, modelStatus: String, loading: Boolean, ope
     Text("AI", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
     Text("Configure the local LLM engine. Settings shown here are passed to the native sampler.")
     SettingCard("Model", if (modelStatus.startsWith("SUCCESS:")) "$modelName · Loaded" else modelStatus, openModel)
-    SettingCard("Generation", "Temperature, Top-K, Top-P, Min-P, Typical-P, repetition and seed", openGeneration)
+    SettingCard("Generation", "Thinking ON/OFF, Temperature, Top-K, Top-P, Min-P, Typical-P, repetition, seed", openGeneration)
     ComingSoon("Context", "Context size and maximum output tokens are fixed by the current native runtime.")
-    ComingSoon("Thinking", "Requires model-provided reasoning output; unavailable in this build.")
     ComingSoon("Preset", "Presets are not saved until a persistent settings data store is implemented.")
     if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
   }
@@ -167,13 +169,29 @@ private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (Samp
   var prompt by rememberSaveable { mutableStateOf("") }; var temperature by rememberSaveable { mutableStateOf("0.7") }
   var topK by rememberSaveable { mutableStateOf("40") }; var topP by rememberSaveable { mutableStateOf("0.9") }; var minP by rememberSaveable { mutableStateOf("0.0") }
   var typicalP by rememberSaveable { mutableStateOf("1.0") }; var repeat by rememberSaveable { mutableStateOf("1.1") }; var lastN by rememberSaveable { mutableStateOf("64") }; var seed by rememberSaveable { mutableStateOf("12345") }
+  var enableThinking by rememberSaveable { mutableStateOf(false) }
   ScreenHeader("Generation", back)
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
     Text("All controls below are sent directly to the native sampling pipeline.", style = MaterialTheme.typography.bodySmall)
     LabeledInput("Prompt", prompt, { prompt = it }, 3)
+    Row(
+      modifier = Modifier.fillMaxWidth(),
+      horizontalArrangement = Arrangement.SpaceBetween,
+      verticalAlignment = Alignment.CenterVertically
+    ) {
+      Column {
+        Text("Thinking", fontWeight = FontWeight.Bold)
+        Text(if (enableThinking) "ON" else "OFF", style = MaterialTheme.typography.bodySmall)
+      }
+      Switch(
+        checked = enableThinking,
+        onCheckedChange = { enableThinking = it },
+        modifier = Modifier.testTag("thinking_switch")
+      )
+    }
     LabeledInput("Temperature", temperature, { temperature = it }); LabeledInput("Top-K", topK, { topK = it }); LabeledInput("Top-P", topP, { topP = it })
     LabeledInput("Min-P", minP, { minP = it }); LabeledInput("Typical-P", typicalP, { typicalP = it }); LabeledInput("Repetition Penalty", repeat, { repeat = it }); LabeledInput("Penalty Last N", lastN, { lastN = it }); LabeledInput("Seed", seed, { seed = it })
-    Button(onClick = { onGenerate(SamplingSettings(prompt, temperature.toFloatOrNull() ?: .7f, topK.toIntOrNull() ?: 40, topP.toFloatOrNull() ?: .9f, minP.toFloatOrNull() ?: 0f, typicalP.toFloatOrNull() ?: 1f, repeat.toFloatOrNull() ?: 1.1f, lastN.toIntOrNull() ?: 64, seed.toLongOrNull() ?: 12345L)) }, enabled = !loading && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth().testTag("run_generation_button")) { Text(if (loading) "Generating…" else "Run local inference") }
+    Button(onClick = { onGenerate(SamplingSettings(prompt, temperature.toFloatOrNull() ?: .7f, topK.toIntOrNull() ?: 40, topP.toFloatOrNull() ?: .9f, minP.toFloatOrNull() ?: 0f, typicalP.toFloatOrNull() ?: 1f, repeat.toFloatOrNull() ?: 1.1f, lastN.toIntOrNull() ?: 64, seed.toLongOrNull() ?: 12345L, enableThinking)) }, enabled = !loading && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth().testTag("run_generation_button")) { Text(if (loading) "Generating…" else "Run local inference") }
     if (output.isNotBlank()) {
       Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Text(output, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
