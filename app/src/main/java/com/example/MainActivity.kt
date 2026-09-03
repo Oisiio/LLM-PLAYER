@@ -24,6 +24,8 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.example.talk.TalkRepository
+import com.example.talk.TalkScreen
 import com.example.ui.theme.MyApplicationTheme
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -45,6 +47,7 @@ class MainActivity : ComponentActivity() {
     enableThinking: Boolean
   ): String
 
+  private val talkRepository by lazy { TalkRepository(applicationContext) }
   private var modelStatus by mutableStateOf("No model loaded")
   private var selectedModelName by mutableStateOf("No GGUF model selected")
   private var output by mutableStateOf("Select and load a GGUF model to begin.")
@@ -77,7 +80,8 @@ class MainActivity : ComponentActivity() {
               }
               loading = false
             }
-          }
+          },
+          talkRepository = talkRepository
         )
       }
     }
@@ -96,7 +100,11 @@ class MainActivity : ComponentActivity() {
     } catch (error: Throwable) { "ERROR: ${error.message ?: error.javaClass.simpleName}" }
   }
 
-  override fun onDestroy() { runCatching { nativeUnloadModel() }; super.onDestroy() }
+  override fun onDestroy() {
+    runCatching { talkRepository.close() }
+    runCatching { nativeUnloadModel() }
+    super.onDestroy()
+  }
 }
 
 private data class SamplingSettings(
@@ -107,7 +115,8 @@ private data class SamplingSettings(
 
 @Composable
 private fun PlayerApp(modelStatus: String, modelName: String, output: String, loading: Boolean,
-  onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit) {
+  onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit,
+  talkRepository: TalkRepository) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
   var aiPage by rememberSaveable { mutableStateOf(AiPage.HOME) }
   Scaffold(
@@ -119,7 +128,7 @@ private fun PlayerApp(modelStatus: String, modelName: String, output: String, lo
   ) { padding ->
     Surface(Modifier.fillMaxSize().padding(padding)) {
       when (destination) {
-        Destination.TALK -> UnavailableScreen("Talk", "Character chat will appear here when the native streaming conversation API is available.", "Talk intentionally has no Thinking or long-term Memory.")
+        Destination.TALK -> TalkScreen(talkRepository)
         Destination.AGENT -> UnavailableScreen("Agent", "Agent runs, tools, and memory require a native harness and are not available in this build.", "No tool controls are exposed until they can execute safely.")
         Destination.AI -> when (aiPage) {
           AiPage.HOME -> AiHome(modelName, modelStatus, loading, { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION })
@@ -174,29 +183,14 @@ private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (Samp
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
     Text("All controls below are sent directly to the native sampling pipeline.", style = MaterialTheme.typography.bodySmall)
     LabeledInput("Prompt", prompt, { prompt = it }, 3)
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      Column {
-        Text("Thinking", fontWeight = FontWeight.Bold)
-        Text(if (enableThinking) "ON" else "OFF", style = MaterialTheme.typography.bodySmall)
-      }
-      Switch(
-        checked = enableThinking,
-        onCheckedChange = { enableThinking = it },
-        modifier = Modifier.testTag("thinking_switch")
-      )
+    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+      Column { Text("Thinking", fontWeight = FontWeight.Bold); Text(if (enableThinking) "ON" else "OFF", style = MaterialTheme.typography.bodySmall) }
+      Switch(checked = enableThinking, onCheckedChange = { enableThinking = it }, modifier = Modifier.testTag("thinking_switch"))
     }
     LabeledInput("Temperature", temperature, { temperature = it }); LabeledInput("Top-K", topK, { topK = it }); LabeledInput("Top-P", topP, { topP = it })
     LabeledInput("Min-P", minP, { minP = it }); LabeledInput("Typical-P", typicalP, { typicalP = it }); LabeledInput("Repetition Penalty", repeat, { repeat = it }); LabeledInput("Penalty Last N", lastN, { lastN = it }); LabeledInput("Seed", seed, { seed = it })
     Button(onClick = { onGenerate(SamplingSettings(prompt, temperature.toFloatOrNull() ?: .7f, topK.toIntOrNull() ?: 40, topP.toFloatOrNull() ?: .9f, minP.toFloatOrNull() ?: 0f, typicalP.toFloatOrNull() ?: 1f, repeat.toFloatOrNull() ?: 1.1f, lastN.toIntOrNull() ?: 64, seed.toLongOrNull() ?: 12345L, enableThinking)) }, enabled = !loading && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth().testTag("run_generation_button")) { Text(if (loading) "Generating…" else "Run local inference") }
-    if (output.isNotBlank()) {
-      Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Text(output, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
-      }
-    }
+    if (output.isNotBlank()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) { Text(output, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall) }
     HorizontalDivider(); Text("Coming Soon", fontWeight = FontWeight.Bold); Text("DRY · XTC · Dynamic Temperature · Mirostat · Frequency Penalty · Presence Penalty · Sampler Order", color = MaterialTheme.colorScheme.onSurfaceVariant)
   }
 }
@@ -204,10 +198,8 @@ private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (Samp
 @Composable private fun LabeledInput(label: String, value: String, change: (String) -> Unit, minLines: Int = 1) = OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = minLines)
 
 @OptIn(ExperimentalMaterial3Api::class)
-@Composable private fun ScreenHeader(title: String, back: () -> Unit) {
-  TopAppBar(title = { Text(title) }, navigationIcon = { TextButton(onClick = back) { Text("Back") } })
-}
+@Composable private fun ScreenHeader(title: String, back: () -> Unit) = TopAppBar(title = { Text(title) }, navigationIcon = { TextButton(onClick = back) { Text("Back") } })
 
 @Composable private fun SettingCard(title: String, detail: String, click: () -> Unit) = Card(onClick = click, modifier = Modifier.fillMaxWidth()) { Column(Modifier.padding(18.dp)) { Text(title, fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
 @Composable private fun ComingSoon(title: String, detail: String) = Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) { Column(Modifier.padding(18.dp)) { Text("Coming Soon · $title", fontWeight = FontWeight.Bold); Text(detail, style = MaterialTheme.typography.bodySmall) } }
-@Composable private fun UnavailableScreen(title: String, message: String, footnote: String) = Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Coming Soon", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(message); Text(footnote, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+@Composable private fun UnavailableScreen(title: String, message: String, footnote: String) = Column(Modifier.fillMaxSize().padding(24.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) { Text(title, style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold); Text("Coming Soon", color = MaterialTheme.colorScheme.primary, fontWeight = FontWeight.Bold); Text(message); Text(footnote, color = MaterialTheme.colorScheme.onSurfaceVariant) }
