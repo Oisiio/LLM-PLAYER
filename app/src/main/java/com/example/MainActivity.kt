@@ -24,6 +24,9 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.example.ui.talk.LlmStreamRunner
+import com.example.ui.talk.TalkMainScreen
+import com.example.ui.talk.TalkViewModel
 import com.example.ui.theme.MyApplicationTheme
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -32,6 +35,10 @@ import kotlinx.coroutines.withContext
 
 private enum class Destination { TALK, AI, AGENT }
 private enum class AiPage { HOME, MODEL, GENERATION }
+
+fun interface NativeTokenCallback {
+  fun onToken(token: String)
+}
 
 class MainActivity : ComponentActivity() {
   companion object { init { System.loadLibrary("localllm_native") } }
@@ -44,11 +51,42 @@ class MainActivity : ComponentActivity() {
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
     enableThinking: Boolean
   ): String
+  private external fun nativeGenerateStream(
+    prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
+    typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+    enableThinking: Boolean, callback: NativeTokenCallback
+  ): String
 
   private var modelStatus by mutableStateOf("No model loaded")
   private var selectedModelName by mutableStateOf("No GGUF model selected")
   private var output by mutableStateOf("Select and load a GGUF model to begin.")
   private var loading by mutableStateOf(false)
+
+  private val talkViewModel by lazy {
+    TalkViewModel(applicationContext, object : LlmStreamRunner {
+      override fun isModelLoaded(): Boolean = nativeIsModelLoaded()
+      override suspend fun runStreamingInference(
+        prompt: String,
+        temperature: Float,
+        topK: Int,
+        topP: Float,
+        minP: Float,
+        typicalP: Float,
+        repetitionPenalty: Float,
+        penaltyLastN: Int,
+        seed: Long,
+        enableThinking: Boolean,
+        onToken: (String) -> Unit
+      ): String = withContext(Dispatchers.Default) {
+        if (!nativeIsModelLoaded()) return@withContext "ERROR: Model not loaded."
+        nativeGenerateStream(
+          prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
+          penaltyLastN, seed, enableThinking,
+          NativeTokenCallback { token -> onToken(token) }
+        )
+      }
+    })
+  }
 
   private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
     if (uri != null) lifecycleScope.launch {
@@ -63,6 +101,7 @@ class MainActivity : ComponentActivity() {
     setContent {
       MyApplicationTheme {
         PlayerApp(
+          talkViewModel = talkViewModel,
           modelStatus = modelStatus, modelName = selectedModelName, output = output, loading = loading,
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
@@ -106,7 +145,7 @@ private data class SamplingSettings(
 )
 
 @Composable
-private fun PlayerApp(modelStatus: String, modelName: String, output: String, loading: Boolean,
+private fun PlayerApp(talkViewModel: TalkViewModel, modelStatus: String, modelName: String, output: String, loading: Boolean,
   onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
   var aiPage by rememberSaveable { mutableStateOf(AiPage.HOME) }
@@ -119,7 +158,7 @@ private fun PlayerApp(modelStatus: String, modelName: String, output: String, lo
   ) { padding ->
     Surface(Modifier.fillMaxSize().padding(padding)) {
       when (destination) {
-        Destination.TALK -> UnavailableScreen("Talk", "Character chat will appear here when the native streaming conversation API is available.", "Talk intentionally has no Thinking or long-term Memory.")
+        Destination.TALK -> TalkMainScreen(talkViewModel)
         Destination.AGENT -> UnavailableScreen("Agent", "Agent runs, tools, and memory require a native harness and are not available in this build.", "No tool controls are exposed until they can execute safely.")
         Destination.AI -> when (aiPage) {
           AiPage.HOME -> AiHome(modelName, modelStatus, loading, { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION })

@@ -6,6 +6,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <functional>
 #include <mutex>
 #include <random>
 #include <string>
@@ -242,7 +243,7 @@ std::string stop_tokenization_report(const llama_vocab * vocab, const std::strin
     return report;
 }
 
-std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float typical_p_override = -1.0f, float repetition_penalty = kRepetitionPenalty, int32_t penalty_last_n = kPenaltyLastN, int64_t seed = kSeed, bool enable_thinking = false) {
+std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float typical_p_override = -1.0f, float repetition_penalty = kRepetitionPenalty, int32_t penalty_last_n = kPenaltyLastN, int64_t seed = kSeed, bool enable_thinking = false, const std::function<void(const char*, int32_t)> & on_token = nullptr, std::string * out_raw_text = nullptr) {
     std::string prompt_text = prompt_input;
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
     float typical_p = typical_p_override < 0.0f ? g_default_typical_p : typical_p_override;
@@ -300,7 +301,12 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         char token_text[256] = {};
         const int32_t token_length = llama_token_to_piece(vocab, current_token, token_text, static_cast<int32_t>(sizeof(token_text)), 0, true);
         if (token_length < 0) return "ERROR: llama_token_to_piece failed";
-        if (token_length > 0) generated_text.append(token_text, static_cast<size_t>(token_length));
+        if (token_length > 0) {
+            generated_text.append(token_text, static_cast<size_t>(token_length));
+            if (on_token != nullptr) {
+                on_token(token_text, token_length);
+            }
+        }
         generated_count++;
         generated_tokens.push_back(current_token);
         const size_t stop_pos = generated_text.find(kStopSequence);
@@ -331,6 +337,9 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         if (generation_time_ms > 0.0 && generated_count > 0) generation_speed = static_cast<double>(generated_count) / (generation_time_ms / 1000.0);
     } else total_time_ms = prompt_processing_time_ms;
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: template=%s, prompt_tokens=%zu, gen_tokens=%d, typical_p=%.2f, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", chat_template.c_str(), tokens.size(), generated_count, typical_p, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
+    if (out_raw_text != nullptr) {
+        *out_raw_text = generated_text;
+    }
     return "SUCCESS: temperature + top-k + typical-p + top-p + min-p + repetition-penalty sampling completed\n"
         "TEMPERATURE: " + std::to_string(temperature) + "\n"
         "TOP-K: " + std::to_string(top_k) + "\n"
@@ -493,4 +502,46 @@ Java_com_example_MainActivity_nativeGenerateWithSampling(
     }();
     env->ReleaseStringUTFChars(prompt, chars);
     return env->NewStringUTF(result.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_MainActivity_nativeGenerateStream(
+        JNIEnv * env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p,
+        jfloat min_p, jfloat typical_p, jfloat repetition_penalty, jint penalty_last_n, jlong seed,
+        jboolean enable_thinking, jobject token_callback) {
+    if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
+    const char * chars = env->GetStringUTFChars(prompt, nullptr);
+    if (chars == nullptr) return env->NewStringUTF("ERROR: prompt unavailable");
+
+    jclass cb_class = token_callback != nullptr ? env->GetObjectClass(token_callback) : nullptr;
+    jmethodID on_token_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onToken", "(Ljava/lang/String;)V") : nullptr;
+
+    std::string raw_text;
+    std::string status_or_err;
+    {
+        std::lock_guard<std::mutex> lock(g_model_mutex);
+        if (g_model == nullptr || g_context == nullptr) {
+            env->ReleaseStringUTFChars(prompt, chars);
+            return env->NewStringUTF("ERROR: model is not loaded");
+        }
+        status_or_err = generate_sampling_locked(
+            chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed,
+            enable_thinking == JNI_TRUE,
+            [&](const char * piece, int32_t len) {
+                if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {
+                    jstring jpiece = env->NewStringUTF(std::string(piece, static_cast<size_t>(len)).c_str());
+                    if (jpiece != nullptr) {
+                        env->CallVoidMethod(token_callback, on_token_mid, jpiece);
+                        env->DeleteLocalRef(jpiece);
+                    }
+                }
+            },
+            &raw_text
+        );
+    }
+    env->ReleaseStringUTFChars(prompt, chars);
+    if (status_or_err.rfind("ERROR:", 0) == 0) {
+        return env->NewStringUTF(status_or_err.c_str());
+    }
+    return env->NewStringUTF(raw_text.c_str());
 }
