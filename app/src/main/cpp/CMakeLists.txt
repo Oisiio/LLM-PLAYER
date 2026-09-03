@@ -7,7 +7,7 @@ set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "ggml: use OpenMP" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "ggml: use LLAMAFILE" FORCE)
 set(GGML_NATIVE OFF CACHE BOOL "ggml: optimize the build for the current system" FORCE)
-set(LLAMA_BUILD_COMMON OFF CACHE BOOL "llama: build common utils library" FORCE)
+set(LLAMA_BUILD_COMMON ON CACHE BOOL "llama: build common utils library" FORCE)
 set(LLAMA_BUILD_TESTS OFF CACHE BOOL "llama: build tests" FORCE)
 set(LLAMA_BUILD_TOOLS OFF CACHE BOOL "llama: build tools" FORCE)
 set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "llama: build examples" FORCE)
@@ -95,8 +95,15 @@ find_library(
     log
 )
 
+target_include_directories(
+    localllm_native
+    PRIVATE
+    "${LLAMA_CPP_SOURCE_DIR}/common"
+)
+
 target_link_libraries(
     localllm_native
     llama
+    llama-common
     ${log-lib}
 )

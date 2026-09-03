@@ -13,6 +13,7 @@
 #include <vector>
 
 #include "llama.h"
+#include "chat.h"
 
 namespace {
 constexpr char kLogTag[] = "LLM-PLAYER";
@@ -31,32 +32,51 @@ float g_default_typical_p = kTypicalP;
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
 llama_context * g_context = nullptr;
+common_chat_templates_ptr g_chat_templates;
 
 void unload_model_locked() {
+    g_chat_templates.reset();
     if (g_context != nullptr) { llama_free(g_context); g_context = nullptr; }
     if (g_model != nullptr) { llama_model_free(g_model); g_model = nullptr; }
 }
 
-bool format_chat_prompt(const std::string & user_prompt, std::string & formatted_prompt, std::string & template_name) {
+bool format_chat_prompt(const std::string & user_prompt,
+                        std::string & formatted_prompt,
+                        std::string & template_name,
+                        std::vector<std::string> & additional_stops) {
     if (g_model == nullptr) return false;
-    const char * tmpl = llama_model_chat_template(g_model, nullptr);
-    if (tmpl == nullptr || tmpl[0] == '\\0') {
+
+    if (!g_chat_templates) {
+        g_chat_templates = common_chat_templates_init(g_model, "");
+    }
+    if (!g_chat_templates) return false;
+
+    const char * raw_tmpl = llama_model_chat_template(g_model, nullptr);
+    if ((raw_tmpl == nullptr || raw_tmpl[0] == '\0') && !common_chat_templates_was_explicit(g_chat_templates.get())) {
         formatted_prompt = user_prompt;
         template_name = "NONE";
+        additional_stops.clear();
         return true;
     }
 
-    llama_chat_message message = { "user", user_prompt.c_str() };
-    int32_t required = llama_chat_apply_template(tmpl, &message, 1, true, nullptr, 0);
-    if (required < 0) return false;
+    try {
+        common_chat_templates_inputs inputs;
+        common_chat_msg msg;
+        msg.role = "user";
+        msg.content = user_prompt;
+        inputs.messages.push_back(msg);
+        inputs.add_generation_prompt = true;
+        inputs.use_jinja = true;
 
-    std::vector<char> buffer(static_cast<size_t>(required) + 1u);
-    int32_t actual = llama_chat_apply_template(tmpl, &message, 1, true, buffer.data(), static_cast<int32_t>(buffer.size()));
-    if (actual < 0 || actual > static_cast<int32_t>(buffer.size())) return false;
-
-    formatted_prompt.assign(buffer.data(), static_cast<size_t>(actual));
-    template_name = tmpl;
-    return !formatted_prompt.empty();
+        const auto chat_params = common_chat_templates_apply(g_chat_templates.get(), inputs);
+        formatted_prompt = chat_params.prompt;
+        additional_stops = chat_params.additional_stops;
+        template_name = (raw_tmpl != nullptr && raw_tmpl[0] != '\0') ? raw_tmpl : "MODEL_CHAT_TEMPLATE";
+        return !formatted_prompt.empty();
+    } catch (const std::exception & e) {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "format_chat_prompt exception: %s", e.what());
+        return false;
+    }
 }
 
 bool tokenize_prompt(const std::string & prompt, std::vector<llama_token> & tokens) {
@@ -227,7 +247,8 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
     parse_prompt_sampling_tags(prompt_text, min_p, typical_p);
     std::string formatted_prompt;
     std::string chat_template;
-    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template)) return "ERROR: llama_chat_apply_template failed";
+    std::vector<std::string> additional_stops;
+    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops)) return "ERROR: chat_template_apply failed";
     if (!std::isfinite(min_p)) min_p = 0.0f;
     min_p = std::max(0.0f, std::min(1.0f, min_p));
     if (!std::isfinite(typical_p)) typical_p = 1.0f;
@@ -282,6 +303,18 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
         generated_tokens.push_back(current_token);
         const size_t stop_pos = generated_text.find(kStopSequence);
         if (stop_pos != std::string::npos) { generated_text.erase(stop_pos); stop_reason = "STOP_SEQUENCE"; break; }
+        bool stopped_by_additional = false;
+        for (const auto & add_stop : additional_stops) {
+            if (add_stop.empty()) continue;
+            const size_t pos = generated_text.find(add_stop);
+            if (pos != std::string::npos) {
+                generated_text.erase(pos);
+                stop_reason = "STOP_SEQUENCE";
+                stopped_by_additional = true;
+                break;
+            }
+        }
+        if (stopped_by_additional) break;
         if (generated_count >= kMaxGenTokens) { stop_reason = "MAX_TOKENS"; break; }
         llama_token next_token = current_token;
         llama_batch token_batch = llama_batch_get_one(&next_token, 1);
@@ -343,6 +376,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeLoadMod
     g_context = llama_init_from_model(g_model, context_params);
     env->ReleaseStringUTFChars(model_path, path);
     if (g_context == nullptr) { llama_model_free(g_model); g_model = nullptr; return env->NewStringUTF("ERROR: model loaded, but llama_init_from_model failed"); }
+    g_chat_templates = common_chat_templates_init(g_model, "");
     return env->NewStringUTF("SUCCESS: GGUF model + context loaded");
 }
 
