@@ -1,5 +1,6 @@
 package com.example
 
+import android.content.Context
 import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -58,6 +59,7 @@ class MainActivity : ComponentActivity() {
   private external fun nativeLoadModel(modelPath: String): String
   private external fun nativeUnloadModel()
   private external fun nativeIsModelLoaded(): Boolean
+  private external fun nativeSetThreads(nThreads: Int, nThreadsBatch: Int)
   private external fun nativeGenerateWithSampling(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
@@ -73,6 +75,8 @@ class MainActivity : ComponentActivity() {
   private var selectedModelName by mutableStateOf("No GGUF model selected")
   private var output by mutableStateOf("Select and load a GGUF model to begin.")
   private var loading by mutableStateOf(false)
+  private var cpuThreads by mutableIntStateOf(4)
+  private var cpuThreadsBatch by mutableIntStateOf(4)
 
   private val talkViewModel by lazy {
     TalkViewModel(applicationContext, object : LlmStreamRunner {
@@ -143,11 +147,26 @@ class MainActivity : ComponentActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     super.onCreate(savedInstanceState); enableEdgeToEdge()
+    val prefs = getSharedPreferences("talk_prefs", Context.MODE_PRIVATE)
+    cpuThreads = prefs.getInt("cpu_threads", 4)
+    cpuThreadsBatch = prefs.getInt("cpu_threads_batch", 4)
+    nativeSetThreads(cpuThreads, cpuThreadsBatch)
     setContent {
       MyApplicationTheme {
         PlayerApp(
           talkViewModel = talkViewModel,
           modelStatus = modelStatus, modelName = selectedModelName, output = output, loading = loading,
+          cpuThreads = cpuThreads,
+          cpuThreadsBatch = cpuThreadsBatch,
+          onUpdateThreads = { threads, batchThreads ->
+            cpuThreads = threads
+            cpuThreadsBatch = batchThreads
+            nativeSetThreads(threads, batchThreads)
+            prefs.edit()
+              .putInt("cpu_threads", threads)
+              .putInt("cpu_threads_batch", batchThreads)
+              .apply()
+          },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
           onGenerate = { settings ->
@@ -190,8 +209,11 @@ private data class SamplingSettings(
 )
 
 @Composable
-private fun PlayerApp(talkViewModel: TalkViewModel, modelStatus: String, modelName: String, output: String, loading: Boolean,
-  onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit) {
+private fun PlayerApp(
+  talkViewModel: TalkViewModel, modelStatus: String, modelName: String, output: String, loading: Boolean,
+  cpuThreads: Int, cpuThreadsBatch: Int, onUpdateThreads: (Int, Int) -> Unit,
+  onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit
+) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
   var aiPage by rememberSaveable { mutableStateOf(AiPage.HOME) }
   Scaffold(
@@ -206,7 +228,10 @@ private fun PlayerApp(talkViewModel: TalkViewModel, modelStatus: String, modelNa
         Destination.TALK -> TalkMainScreen(talkViewModel)
         Destination.AGENT -> UnavailableScreen("Agent", "Agent runs, tools, and memory require a native harness and are not available in this build.", "No tool controls are exposed until they can execute safely.")
         Destination.AI -> when (aiPage) {
-          AiPage.HOME -> AiHome(modelName, modelStatus, loading, { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION })
+          AiPage.HOME -> AiHome(
+            modelName, modelStatus, loading, cpuThreads, cpuThreadsBatch, onUpdateThreads,
+            { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION }
+          )
           AiPage.MODEL -> ModelScreen(modelName, modelStatus, loading, onPickModel, onUnload, { aiPage = AiPage.HOME })
           AiPage.GENERATION -> GenerationScreen(output, loading, onGenerate, { aiPage = AiPage.HOME })
         }
@@ -221,10 +246,51 @@ private fun RowScope.NavItem(target: Destination, selected: Destination, label: 
 }
 
 @Composable
-private fun AiHome(modelName: String, modelStatus: String, loading: Boolean, openModel: () -> Unit, openGeneration: () -> Unit) {
+private fun AiHome(
+  modelName: String, modelStatus: String, loading: Boolean,
+  cpuThreads: Int, cpuThreadsBatch: Int, onUpdateThreads: (Int, Int) -> Unit,
+  openModel: () -> Unit, openGeneration: () -> Unit
+) {
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text("AI", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
     Text("Configure the local LLM engine. Settings shown here are passed to the native sampler.")
+
+    Card(Modifier.fillMaxWidth()) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("CPUスレッド設定", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("CPUスレッド数", fontWeight = FontWeight.SemiBold)
+            Text("$cpuThreads", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+          }
+          Text("CPUスレッド数：テキスト生成時に使用するCPUスレッド数です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          Slider(
+            value = cpuThreads.toFloat(),
+            onValueChange = { onUpdateThreads(it.toInt(), cpuThreadsBatch) },
+            valueRange = 1f..8f,
+            steps = 6
+          )
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("バッチスレッド数", fontWeight = FontWeight.SemiBold)
+            Text("$cpuThreadsBatch", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+          }
+          Text("バッチスレッド数：プロンプト処理時に使用するCPUスレッド数です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+          Slider(
+            value = cpuThreadsBatch.toFloat(),
+            onValueChange = { onUpdateThreads(cpuThreads, it.toInt()) },
+            valueRange = 1f..8f,
+            steps = 6
+          )
+        }
+      }
+    }
+
     SettingCard("Model", if (modelStatus.startsWith("SUCCESS:")) "$modelName · Loaded" else modelStatus, openModel)
     SettingCard("Generation", "Thinking ON/OFF, Temperature, Top-K, Top-P, Min-P, Typical-P, repetition, seed", openGeneration)
     ComingSoon("Context", "Context size and maximum output tokens are fixed by the current native runtime.")

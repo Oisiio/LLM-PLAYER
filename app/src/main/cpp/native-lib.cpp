@@ -29,6 +29,8 @@ constexpr int64_t kSeed = 12345;
 
 float g_default_min_p = kMinP;
 float g_default_typical_p = kTypicalP;
+int32_t g_n_threads = 4;
+int32_t g_n_threads_batch = 4;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -358,12 +360,12 @@ std::string generate_sampling_locked(
         total_time_ms = std::chrono::duration<double, std::milli>(t_generation_end - t_prompt_start).count();
         if (generation_time_ms > 0.0 && generated_count > 0) generation_speed = static_cast<double>(generated_count) / (generation_time_ms / 1000.0);
     } else total_time_ms = prompt_processing_time_ms;
-    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: template=%s, prompt_tokens=%zu, gen_tokens=%d, typical_p=%.2f, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", chat_template.c_str(), tokens.size(), generated_count, typical_p, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: threads=%d/%d, template=%s, prompt_tokens=%zu, gen_tokens=%d, typical_p=%.2f, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", g_n_threads, g_n_threads_batch, chat_template.c_str(), tokens.size(), generated_count, typical_p, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
     if (out_raw_text != nullptr) {
         *out_raw_text = generated_text;
     }
     if (on_metrics != nullptr) {
-        on_metrics(static_cast<int32_t>(tokens.size()), generated_count, prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed, 4);
+        on_metrics(static_cast<int32_t>(tokens.size()), generated_count, prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed, g_n_threads);
     }
     return "SUCCESS: temperature + top-k + typical-p + top-p + min-p + repetition-penalty sampling completed\n"
         "TEMPERATURE: " + std::to_string(temperature) + "\n"
@@ -407,8 +409,8 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeLoadMod
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx = 512;
     context_params.n_batch = 512;
-    context_params.n_threads = 4;
-    context_params.n_threads_batch = 4;
+    context_params.n_threads = g_n_threads;
+    context_params.n_threads_batch = g_n_threads_batch;
     g_context = llama_init_from_model(g_model, context_params);
     env->ReleaseStringUTFChars(model_path, path);
     if (g_context == nullptr) { llama_model_free(g_model); g_model = nullptr; return env->NewStringUTF("ERROR: model loaded, but llama_init_from_model failed"); }
@@ -501,6 +503,17 @@ extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeSetTypical
 extern "C" JNIEXPORT jfloat JNICALL Java_com_example_MainActivity_nativeGetTypicalP(JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     return static_cast<jfloat>(g_default_typical_p);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_MainActivity_nativeSetThreads(
+        JNIEnv* /* env */, jobject /* this */, jint n_threads, jint n_threads_batch) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_n_threads = (n_threads > 0) ? static_cast<int32_t>(n_threads) : 4;
+    g_n_threads_batch = (n_threads_batch > 0) ? static_cast<int32_t>(n_threads_batch) : 4;
+    if (g_context != nullptr) {
+        llama_set_n_threads(g_context, g_n_threads, g_n_threads_batch);
+    }
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeUnloadModel(JNIEnv* /* env */, jobject /* this */) {
