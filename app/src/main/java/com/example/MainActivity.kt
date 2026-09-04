@@ -25,6 +25,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.example.ui.talk.LlmStreamRunner
+import com.example.ui.talk.TalkDebugMetrics
 import com.example.ui.talk.TalkMainScreen
 import com.example.ui.talk.TalkViewModel
 import com.example.ui.theme.MyApplicationTheme
@@ -36,8 +37,19 @@ import kotlinx.coroutines.withContext
 private enum class Destination { TALK, AI, AGENT }
 private enum class AiPage { HOME, MODEL, GENERATION }
 
-fun interface NativeTokenCallback {
+interface NativeTokenCallback {
   fun onToken(token: String)
+  fun onTtft(ttftMs: Double) {}
+  fun onMetrics(
+    promptTokens: Int,
+    genTokens: Int,
+    promptTimeMs: Double,
+    ttftMs: Double,
+    genTimeMs: Double,
+    totalTimeMs: Double,
+    speed: Double,
+    threads: Int
+  ) {}
 }
 
 class MainActivity : ComponentActivity() {
@@ -76,13 +88,46 @@ class MainActivity : ComponentActivity() {
         penaltyLastN: Int,
         seed: Long,
         enableThinking: Boolean,
-        onToken: (String) -> Unit
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)?,
+        onMetrics: ((TalkDebugMetrics) -> Unit)?
       ): String = withContext(Dispatchers.Default) {
         if (!nativeIsModelLoaded()) return@withContext "ERROR: Model not loaded."
         nativeGenerateStream(
           prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
           penaltyLastN, seed, enableThinking,
-          NativeTokenCallback { token -> onToken(token) }
+          object : NativeTokenCallback {
+            override fun onToken(token: String) {
+              onToken(token)
+            }
+            override fun onTtft(ttftMs: Double) {
+              onTtft?.invoke(ttftMs)
+            }
+            override fun onMetrics(
+              promptTokens: Int,
+              genTokens: Int,
+              promptTimeMs: Double,
+              ttftMs: Double,
+              genTimeMs: Double,
+              totalTimeMs: Double,
+              speed: Double,
+              threads: Int
+            ) {
+              onMetrics?.invoke(
+                TalkDebugMetrics(
+                  ttftMs = ttftMs,
+                  promptTokens = promptTokens,
+                  genTokens = genTokens,
+                  promptTimeMs = promptTimeMs,
+                  genTimeMs = genTimeMs,
+                  totalTimeMs = totalTimeMs,
+                  speedTokPerSec = speed,
+                  threads = threads,
+                  isGenerating = false
+                )
+              )
+            }
+          }
         )
       }
     })

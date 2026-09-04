@@ -22,6 +22,7 @@ fun TalkMainScreen(
     val isStreaming by viewModel.isStreaming.collectAsState()
     val streamingMessageId by viewModel.streamingMessageId.collectAsState()
     val streamingText by viewModel.streamingText.collectAsState()
+    val debugMetrics by viewModel.debugMetrics.collectAsState()
 
     var showImportDialog by remember { mutableStateOf(false) }
 
@@ -101,6 +102,7 @@ fun TalkMainScreen(
                     isStreaming = isStreaming,
                     streamingMessageId = streamingMessageId,
                     streamingText = streamingText,
+                    debugMetrics = debugMetrics,
                     onSendMessage = { text ->
                         viewModel.sendMessage(dest.character, dest.chat, text)
                     },

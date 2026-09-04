@@ -243,7 +243,22 @@ std::string stop_tokenization_report(const llama_vocab * vocab, const std::strin
     return report;
 }
 
-std::string generate_sampling_locked(const std::string & prompt_input, float temperature = kTemperature, int32_t top_k = kTopK, float top_p = kTopP, float min_p = kMinP, float typical_p_override = -1.0f, float repetition_penalty = kRepetitionPenalty, int32_t penalty_last_n = kPenaltyLastN, int64_t seed = kSeed, bool enable_thinking = false, const std::function<void(const char*, int32_t)> & on_token = nullptr, std::string * out_raw_text = nullptr) {
+std::string generate_sampling_locked(
+    const std::string & prompt_input,
+    float temperature = kTemperature,
+    int32_t top_k = kTopK,
+    float top_p = kTopP,
+    float min_p = kMinP,
+    float typical_p_override = -1.0f,
+    float repetition_penalty = kRepetitionPenalty,
+    int32_t penalty_last_n = kPenaltyLastN,
+    int64_t seed = kSeed,
+    bool enable_thinking = false,
+    const std::function<void(const char*, int32_t)> & on_token = nullptr,
+    std::string * out_raw_text = nullptr,
+    const std::function<void(double)> & on_ttft = nullptr,
+    const std::function<void(int32_t, int32_t, double, double, double, double, double, int32_t)> & on_metrics = nullptr
+) {
     std::string prompt_text = prompt_input;
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
     float typical_p = typical_p_override < 0.0f ? g_default_typical_p : typical_p_override;
@@ -296,7 +311,14 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
             effective_logits = penalized_logits.data();
         }
         const llama_token current_token = sample_with_sampling_filters(effective_logits, vocab_size, temperature, top_k, top_p, min_p, typical_p, rng);
-        if (!first_token_determined) { t_first_token = std::chrono::steady_clock::now(); first_token_determined = true; }
+        if (!first_token_determined) {
+            t_first_token = std::chrono::steady_clock::now();
+            first_token_determined = true;
+            if (on_ttft != nullptr) {
+                const double current_ttft_ms = std::chrono::duration<double, std::milli>(t_first_token - t_prompt_start).count();
+                on_ttft(current_ttft_ms);
+            }
+        }
         if (llama_vocab_is_eog(vocab, current_token)) { stop_reason = "EOG"; break; }
         char token_text[256] = {};
         const int32_t token_length = llama_token_to_piece(vocab, current_token, token_text, static_cast<int32_t>(sizeof(token_text)), 0, true);
@@ -339,6 +361,9 @@ std::string generate_sampling_locked(const std::string & prompt_input, float tem
     __android_log_print(ANDROID_LOG_INFO, kLogTag, "Inference metrics: template=%s, prompt_tokens=%zu, gen_tokens=%d, typical_p=%.2f, min_p=%.2f, seed=%s, stop_reason=%s, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec", chat_template.c_str(), tokens.size(), generated_count, typical_p, min_p, seed_str.c_str(), stop_reason.c_str(), prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
     if (out_raw_text != nullptr) {
         *out_raw_text = generated_text;
+    }
+    if (on_metrics != nullptr) {
+        on_metrics(static_cast<int32_t>(tokens.size()), generated_count, prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed, 4);
     }
     return "SUCCESS: temperature + top-k + typical-p + top-p + min-p + repetition-penalty sampling completed\n"
         "TEMPERATURE: " + std::to_string(temperature) + "\n"
@@ -515,6 +540,11 @@ Java_com_example_MainActivity_nativeGenerateStream(
 
     jclass cb_class = token_callback != nullptr ? env->GetObjectClass(token_callback) : nullptr;
     jmethodID on_token_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onToken", "(Ljava/lang/String;)V") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID on_ttft_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onTtft", "(D)V") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID on_metrics_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onMetrics", "(IIDDDDDI)V") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
 
     std::string raw_text;
     std::string status_or_err;
@@ -536,7 +566,25 @@ Java_com_example_MainActivity_nativeGenerateStream(
                     }
                 }
             },
-            &raw_text
+            &raw_text,
+            [&](double ttft_ms) {
+                if (token_callback != nullptr && on_ttft_mid != nullptr) {
+                    env->CallVoidMethod(token_callback, on_ttft_mid, static_cast<jdouble>(ttft_ms));
+                }
+            },
+            [&](int32_t prompt_tokens, int32_t gen_tokens, double prompt_time_ms, double ttft_ms, double gen_time_ms, double total_time_ms, double speed, int32_t threads) {
+                if (token_callback != nullptr && on_metrics_mid != nullptr) {
+                    env->CallVoidMethod(token_callback, on_metrics_mid,
+                        static_cast<jint>(prompt_tokens),
+                        static_cast<jint>(gen_tokens),
+                        static_cast<jdouble>(prompt_time_ms),
+                        static_cast<jdouble>(ttft_ms),
+                        static_cast<jdouble>(gen_time_ms),
+                        static_cast<jdouble>(total_time_ms),
+                        static_cast<jdouble>(speed),
+                        static_cast<jint>(threads));
+                }
+            }
         );
     }
     env->ReleaseStringUTFChars(prompt, chars);

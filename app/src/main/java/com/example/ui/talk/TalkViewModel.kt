@@ -41,7 +41,9 @@ interface LlmStreamRunner {
         penaltyLastN: Int,
         seed: Long,
         enableThinking: Boolean,
-        onToken: (String) -> Unit
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)? = null,
+        onMetrics: ((TalkDebugMetrics) -> Unit)? = null
     ): String
 }
 
@@ -74,6 +76,10 @@ class TalkViewModel(
 
     private val _streamingText = MutableStateFlow("")
     val streamingText: StateFlow<String> = _streamingText.asStateFlow()
+
+    // Debug Metrics state
+    private val _debugMetrics = MutableStateFlow<TalkDebugMetrics?>(null)
+    val debugMetrics: StateFlow<TalkDebugMetrics?> = _debugMetrics.asStateFlow()
 
     // Deleted messages backup for Undo (within 10s)
     private var deletedMessagesBackup = mutableListOf<Message>()
@@ -277,6 +283,7 @@ class TalkViewModel(
 
             _isStreaming.value = true
             _streamingText.value = ""
+            _debugMetrics.value = TalkDebugMetrics(isGenerating = true)
 
             // Target message placeholder
             val targetMessage = if (existingCharMessage != null) {
@@ -314,8 +321,18 @@ class TalkViewModel(
                     onToken = { token ->
                         textAccumulator.append(token)
                         _streamingText.value = textAccumulator.toString()
+                    },
+                    onTtft = { ttft ->
+                        _debugMetrics.value = _debugMetrics.value?.copy(ttftMs = ttft) ?: TalkDebugMetrics(ttftMs = ttft, isGenerating = true)
+                    },
+                    onMetrics = { metrics ->
+                        _debugMetrics.value = metrics
                     }
                 )
+            }
+
+            if (finalResult.startsWith("ERROR:")) {
+                _debugMetrics.value = TalkDebugMetrics(isGenerating = false)
             }
 
             // 短時間待って確定 (要件41)
@@ -345,6 +362,7 @@ class TalkViewModel(
             _isStreaming.value = false
             _streamingMessageId.value = null
             _streamingText.value = ""
+            _debugMetrics.value = _debugMetrics.value?.copy(isGenerating = false)
             loadMessages(chat.id)
         }
     }

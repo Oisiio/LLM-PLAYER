@@ -42,6 +42,7 @@ fun ChatScreen(
     isStreaming: Boolean,
     streamingMessageId: String?,
     streamingText: String,
+    debugMetrics: TalkDebugMetrics? = null,
     onSendMessage: (String) -> Unit,
     onRegenerate: (Message) -> Unit,
     onDeleteCharacterMessage: (Message) -> Unit,
@@ -303,22 +304,30 @@ fun ChatScreen(
             }
         }
     ) { padding ->
-        Box(
+        Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onTap = {
-                            isInputVisible = true
-                            if (editingUserMessage != null) {
-                                // キャンセル
-                                editingUserMessage = null
-                            }
-                        }
-                    )
-                }
         ) {
+            if (com.example.BuildConfig.DEBUG) {
+                TalkDebugMetricsPanel(metrics = debugMetrics)
+            }
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectTapGestures(
+                            onTap = {
+                                isInputVisible = true
+                                if (editingUserMessage != null) {
+                                    // キャンセル
+                                    editingUserMessage = null
+                                }
+                            }
+                        )
+                    }
+            ) {
             LazyColumn(
                 state = listState,
                 modifier = Modifier.fillMaxSize(),
@@ -429,4 +438,5 @@ fun ChatScreen(
             }
         }
     }
+}
 }
