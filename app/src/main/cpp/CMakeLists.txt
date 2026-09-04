@@ -3,6 +3,7 @@ cmake_minimum_required(VERSION 3.22.1)
 project("localllm_native")
 
 # llama.cpp Phase 3-A: CPU-only, arm64-v8a
+set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 set(BUILD_SHARED_LIBS OFF CACHE BOOL "Build shared libraries" FORCE)
 set(GGML_OPENMP OFF CACHE BOOL "ggml: use OpenMP" FORCE)
 set(GGML_LLAMAFILE OFF CACHE BOOL "ggml: use LLAMAFILE" FORCE)
