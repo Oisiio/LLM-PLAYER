@@ -31,6 +31,7 @@ import com.example.ui.talk.TalkMainScreen
 import com.example.ui.talk.TalkViewModel
 import com.example.ui.theme.MyApplicationTheme
 import java.io.File
+import java.util.Locale
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -77,6 +78,9 @@ class MainActivity : ComponentActivity() {
   private var loading by mutableStateOf(false)
   private var cpuThreads by mutableIntStateOf(4)
   private var cpuThreadsBatch by mutableIntStateOf(4)
+  private var defaultTemperature by mutableFloatStateOf(0.7f)
+  private var defaultTopK by mutableIntStateOf(40)
+  private var defaultTopP by mutableFloatStateOf(0.9f)
 
   private val talkViewModel by lazy {
     TalkViewModel(applicationContext, object : LlmStreamRunner {
@@ -150,6 +154,9 @@ class MainActivity : ComponentActivity() {
     val prefs = getSharedPreferences("talk_prefs", Context.MODE_PRIVATE)
     cpuThreads = prefs.getInt("cpu_threads", 4)
     cpuThreadsBatch = prefs.getInt("cpu_threads_batch", 4)
+    defaultTemperature = talkViewModel.repository.getDefaultTemperature()
+    defaultTopK = talkViewModel.repository.getDefaultTopK()
+    defaultTopP = talkViewModel.repository.getDefaultTopP()
     nativeSetThreads(cpuThreads, cpuThreadsBatch)
     setContent {
       MyApplicationTheme {
@@ -158,6 +165,9 @@ class MainActivity : ComponentActivity() {
           modelStatus = modelStatus, modelName = selectedModelName, output = output, loading = loading,
           cpuThreads = cpuThreads,
           cpuThreadsBatch = cpuThreadsBatch,
+          defaultTemperature = defaultTemperature,
+          defaultTopK = defaultTopK,
+          defaultTopP = defaultTopP,
           onUpdateThreads = { threads, batchThreads ->
             cpuThreads = threads
             cpuThreadsBatch = batchThreads
@@ -166,6 +176,18 @@ class MainActivity : ComponentActivity() {
               .putInt("cpu_threads", threads)
               .putInt("cpu_threads_batch", batchThreads)
               .apply()
+          },
+          onUpdateDefaultTemperature = { temp ->
+            defaultTemperature = temp
+            talkViewModel.repository.setDefaultTemperature(temp)
+          },
+          onUpdateDefaultTopK = { k ->
+            defaultTopK = k
+            talkViewModel.repository.setDefaultTopK(k)
+          },
+          onUpdateDefaultTopP = { p ->
+            defaultTopP = p
+            talkViewModel.repository.setDefaultTopP(p)
           },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
@@ -211,7 +233,12 @@ private data class SamplingSettings(
 @Composable
 private fun PlayerApp(
   talkViewModel: TalkViewModel, modelStatus: String, modelName: String, output: String, loading: Boolean,
-  cpuThreads: Int, cpuThreadsBatch: Int, onUpdateThreads: (Int, Int) -> Unit,
+  cpuThreads: Int, cpuThreadsBatch: Int,
+  defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
+  onUpdateThreads: (Int, Int) -> Unit,
+  onUpdateDefaultTemperature: (Float) -> Unit,
+  onUpdateDefaultTopK: (Int) -> Unit,
+  onUpdateDefaultTopP: (Float) -> Unit,
   onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit
 ) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
@@ -229,11 +256,18 @@ private fun PlayerApp(
         Destination.AGENT -> UnavailableScreen("Agent", "Agent runs, tools, and memory require a native harness and are not available in this build.", "No tool controls are exposed until they can execute safely.")
         Destination.AI -> when (aiPage) {
           AiPage.HOME -> AiHome(
-            modelName, modelStatus, loading, cpuThreads, cpuThreadsBatch, onUpdateThreads,
+            modelName, modelStatus, loading,
+            cpuThreads, cpuThreadsBatch, onUpdateThreads,
+            defaultTemperature, defaultTopK, defaultTopP,
+            onUpdateDefaultTemperature, onUpdateDefaultTopK, onUpdateDefaultTopP,
             { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION }
           )
           AiPage.MODEL -> ModelScreen(modelName, modelStatus, loading, onPickModel, onUnload, { aiPage = AiPage.HOME })
-          AiPage.GENERATION -> GenerationScreen(output, loading, onGenerate, { aiPage = AiPage.HOME })
+          AiPage.GENERATION -> GenerationScreen(
+            output, loading,
+            defaultTemperature, defaultTopK, defaultTopP,
+            onGenerate, { aiPage = AiPage.HOME }
+          )
         }
       }
     }
@@ -249,6 +283,10 @@ private fun RowScope.NavItem(target: Destination, selected: Destination, label: 
 private fun AiHome(
   modelName: String, modelStatus: String, loading: Boolean,
   cpuThreads: Int, cpuThreadsBatch: Int, onUpdateThreads: (Int, Int) -> Unit,
+  defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
+  onUpdateDefaultTemperature: (Float) -> Unit,
+  onUpdateDefaultTopK: (Int) -> Unit,
+  onUpdateDefaultTopP: (Float) -> Unit,
   openModel: () -> Unit, openGeneration: () -> Unit
 ) {
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -291,6 +329,64 @@ private fun AiHome(
       }
     }
 
+    Card(Modifier.fillMaxWidth()) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Text("デフォルト生成パラメータ設定", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Text("新規作成チャットおよび生成テスト画面の初期サンプリング設定です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Temperature", fontWeight = FontWeight.SemiBold)
+            Text(String.format(Locale.US, "%.2f", defaultTemperature), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+          }
+          Slider(
+            value = defaultTemperature,
+            onValueChange = {
+              val rounded = (Math.round(it * 20.0f) / 20.0f).coerceIn(0.0f, 2.0f)
+              onUpdateDefaultTemperature(rounded)
+            },
+            valueRange = 0.0f..2.0f,
+            steps = 39
+          )
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Top-K", fontWeight = FontWeight.SemiBold)
+            Text("$defaultTopK", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+          }
+          Slider(
+            value = defaultTopK.toFloat(),
+            onValueChange = {
+              onUpdateDefaultTopK(it.toInt().coerceIn(1, 100))
+            },
+            valueRange = 1f..100f,
+            steps = 98
+          )
+        }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Text("Top-P", fontWeight = FontWeight.SemiBold)
+            Text(String.format(Locale.US, "%.2f", defaultTopP), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+          }
+          Slider(
+            value = defaultTopP,
+            onValueChange = {
+              val rounded = (Math.round(it * 20.0f) / 20.0f).coerceIn(0.05f, 1.0f)
+              onUpdateDefaultTopP(rounded)
+            },
+            valueRange = 0.05f..1.0f,
+            steps = 18
+          )
+        }
+      }
+    }
+
     SettingCard("Model", if (modelStatus.startsWith("SUCCESS:")) "$modelName · Loaded" else modelStatus, openModel)
     SettingCard("Generation", "Thinking ON/OFF, Temperature, Top-K, Top-P, Min-P, Typical-P, repetition, seed", openGeneration)
     ComingSoon("Context", "Context size and maximum output tokens are fixed by the current native runtime.")
@@ -315,10 +411,24 @@ private fun ModelScreen(modelName: String, modelStatus: String, loading: Boolean
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun GenerationScreen(output: String, loading: Boolean, onGenerate: (SamplingSettings) -> Unit, back: () -> Unit) {
-  var prompt by rememberSaveable { mutableStateOf("") }; var temperature by rememberSaveable { mutableStateOf("0.7") }
-  var topK by rememberSaveable { mutableStateOf("40") }; var topP by rememberSaveable { mutableStateOf("0.9") }; var minP by rememberSaveable { mutableStateOf("0.0") }
-  var typicalP by rememberSaveable { mutableStateOf("1.0") }; var repeat by rememberSaveable { mutableStateOf("1.1") }; var lastN by rememberSaveable { mutableStateOf("64") }; var seed by rememberSaveable { mutableStateOf("12345") }
+private fun GenerationScreen(
+  output: String,
+  loading: Boolean,
+  initialTemperature: Float,
+  initialTopK: Int,
+  initialTopP: Float,
+  onGenerate: (SamplingSettings) -> Unit,
+  back: () -> Unit
+) {
+  var prompt by rememberSaveable { mutableStateOf("") }
+  var temperature by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialTemperature)) }
+  var topK by rememberSaveable { mutableStateOf(initialTopK.toString()) }
+  var topP by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialTopP)) }
+  var minP by rememberSaveable { mutableStateOf("0.0") }
+  var typicalP by rememberSaveable { mutableStateOf("1.0") }
+  var repeat by rememberSaveable { mutableStateOf("1.1") }
+  var lastN by rememberSaveable { mutableStateOf("64") }
+  var seed by rememberSaveable { mutableStateOf("12345") }
   var enableThinking by rememberSaveable { mutableStateOf(false) }
   ScreenHeader("Generation", back)
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {

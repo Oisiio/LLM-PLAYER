@@ -7,6 +7,7 @@ import android.net.Uri
 import com.example.data.db.TalkDatabaseHelper
 import com.example.data.model.Character
 import com.example.data.model.Chat
+import com.example.data.model.LlmDefaultSettings
 import com.example.data.model.Message
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -43,6 +44,23 @@ class TalkRepository(private val context: Context) {
     fun setViewMode(mode: CharacterViewMode) {
         _viewMode.value = mode
         prefs.edit().putString("character_view_mode", mode.name).apply()
+    }
+
+    // ==================== Default Generation Settings ====================
+
+    fun getDefaultTemperature(): Float = prefs.getFloat("default_temperature", LlmDefaultSettings.TEMPERATURE)
+    fun setDefaultTemperature(value: Float) {
+        prefs.edit().putFloat("default_temperature", value).apply()
+    }
+
+    fun getDefaultTopK(): Int = prefs.getInt("default_top_k", LlmDefaultSettings.TOP_K)
+    fun setDefaultTopK(value: Int) {
+        prefs.edit().putInt("default_top_k", value).apply()
+    }
+
+    fun getDefaultTopP(): Float = prefs.getFloat("default_top_p", LlmDefaultSettings.TOP_P)
+    fun setDefaultTopP(value: Float) {
+        prefs.edit().putFloat("default_top_p", value).apply()
     }
 
     fun refreshCharacters() {

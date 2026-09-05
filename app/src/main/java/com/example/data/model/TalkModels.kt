@@ -52,13 +52,21 @@ data class Character(
     val lastUsedAt: Long = System.currentTimeMillis()
 )
 
+object LlmDefaultSettings {
+    const val TEMPERATURE: Float = 0.7f
+    const val TOP_K: Int = 40
+    const val TOP_P: Float = 0.9f
+    const val CPU_THREADS: Int = 4
+    const val CPU_THREADS_BATCH: Int = 4
+}
+
 data class Chat(
     val id: String = UUID.randomUUID().toString(),
     val characterId: String,
     val title: String = "New Chat",
-    val temperature: Float = 0.7f,
-    val topK: Int = 40,
-    val topP: Float = 0.9f,
+    val temperature: Float = LlmDefaultSettings.TEMPERATURE,
+    val topK: Int = LlmDefaultSettings.TOP_K,
+    val topP: Float = LlmDefaultSettings.TOP_P,
     val minP: Float = 0.0f,
     val typicalP: Float = 1.0f,
     val repetitionPenalty: Float = 1.1f,

@@ -52,7 +52,7 @@ class TalkViewModel(
     private val llmRunner: LlmStreamRunner
 ) : ViewModel() {
 
-    private val repository = TalkRepository(context)
+    val repository = TalkRepository(context)
 
     val viewMode: StateFlow<CharacterViewMode> = repository.viewMode
     val characters: StateFlow<List<Character>> = repository.characters
@@ -179,7 +179,10 @@ class TalkViewModel(
     private suspend fun createChatInternal(character: Character): Chat {
         val chat = Chat(
             characterId = character.id,
-            title = "New Chat"
+            title = "New Chat",
+            temperature = repository.getDefaultTemperature(),
+            topK = repository.getDefaultTopK(),
+            topP = repository.getDefaultTopP()
         )
         repository.saveChat(chat)
         // 初期の「最初の文章」があればメッセージとして投入
