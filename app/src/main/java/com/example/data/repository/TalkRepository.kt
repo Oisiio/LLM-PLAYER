@@ -63,6 +63,11 @@ class TalkRepository(private val context: Context) {
         prefs.edit().putFloat("default_top_p", value).apply()
     }
 
+    fun getDefaultContextSize(): Int = prefs.getInt("default_context_size", LlmDefaultSettings.CONTEXT_SIZE)
+    fun setDefaultContextSize(value: Int) {
+        prefs.edit().putInt("default_context_size", value).apply()
+    }
+
     fun refreshCharacters() {
         val list = dbHelper.getAllCharacters()
         _characters.value = list

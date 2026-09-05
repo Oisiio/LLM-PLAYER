@@ -61,6 +61,8 @@ class MainActivity : ComponentActivity() {
   private external fun nativeUnloadModel()
   private external fun nativeIsModelLoaded(): Boolean
   private external fun nativeSetThreads(nThreads: Int, nThreadsBatch: Int)
+  private external fun nativeSetContextSize(nCtx: Int): Boolean
+  private external fun nativeGetContextSize(): Int
   private external fun nativeGenerateWithSampling(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
@@ -81,6 +83,7 @@ class MainActivity : ComponentActivity() {
   private var defaultTemperature by mutableFloatStateOf(0.7f)
   private var defaultTopK by mutableIntStateOf(40)
   private var defaultTopP by mutableFloatStateOf(0.9f)
+  private var defaultContextSize by mutableIntStateOf(512)
 
   private val talkViewModel by lazy {
     TalkViewModel(applicationContext, object : LlmStreamRunner {
@@ -157,7 +160,9 @@ class MainActivity : ComponentActivity() {
     defaultTemperature = talkViewModel.repository.getDefaultTemperature()
     defaultTopK = talkViewModel.repository.getDefaultTopK()
     defaultTopP = talkViewModel.repository.getDefaultTopP()
+    defaultContextSize = talkViewModel.repository.getDefaultContextSize()
     nativeSetThreads(cpuThreads, cpuThreadsBatch)
+    nativeSetContextSize(defaultContextSize)
     setContent {
       MyApplicationTheme {
         PlayerApp(
@@ -168,6 +173,7 @@ class MainActivity : ComponentActivity() {
           defaultTemperature = defaultTemperature,
           defaultTopK = defaultTopK,
           defaultTopP = defaultTopP,
+          defaultContextSize = defaultContextSize,
           onUpdateThreads = { threads, batchThreads ->
             cpuThreads = threads
             cpuThreadsBatch = batchThreads
@@ -188,6 +194,11 @@ class MainActivity : ComponentActivity() {
           onUpdateDefaultTopP = { p ->
             defaultTopP = p
             talkViewModel.repository.setDefaultTopP(p)
+          },
+          onUpdateDefaultContextSize = { size ->
+            defaultContextSize = size
+            talkViewModel.repository.setDefaultContextSize(size)
+            nativeSetContextSize(size)
           },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
@@ -235,10 +246,12 @@ private fun PlayerApp(
   talkViewModel: TalkViewModel, modelStatus: String, modelName: String, output: String, loading: Boolean,
   cpuThreads: Int, cpuThreadsBatch: Int,
   defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
+  defaultContextSize: Int,
   onUpdateThreads: (Int, Int) -> Unit,
   onUpdateDefaultTemperature: (Float) -> Unit,
   onUpdateDefaultTopK: (Int) -> Unit,
   onUpdateDefaultTopP: (Float) -> Unit,
+  onUpdateDefaultContextSize: (Int) -> Unit,
   onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit
 ) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
@@ -260,6 +273,7 @@ private fun PlayerApp(
             cpuThreads, cpuThreadsBatch, onUpdateThreads,
             defaultTemperature, defaultTopK, defaultTopP,
             onUpdateDefaultTemperature, onUpdateDefaultTopK, onUpdateDefaultTopP,
+            defaultContextSize, onUpdateDefaultContextSize,
             { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION }
           )
           AiPage.MODEL -> ModelScreen(modelName, modelStatus, loading, onPickModel, onUnload, { aiPage = AiPage.HOME })
@@ -287,11 +301,41 @@ private fun AiHome(
   onUpdateDefaultTemperature: (Float) -> Unit,
   onUpdateDefaultTopK: (Int) -> Unit,
   onUpdateDefaultTopP: (Float) -> Unit,
+  defaultContextSize: Int,
+  onUpdateDefaultContextSize: (Int) -> Unit,
   openModel: () -> Unit, openGeneration: () -> Unit
 ) {
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text("AI", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
     Text("Configure the local LLM engine. Settings shown here are passed to the native sampler.")
+
+    Card(Modifier.fillMaxWidth()) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+          Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text("コンテキストサイズ", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+          Text("$defaultContextSize tokens", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        }
+        Text(
+          "会話で一度に扱えるトークン数です。大きくすると長いプロンプトを扱えます。",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          listOf(512, 1024, 2048, 4096).forEach { size ->
+            FilterChip(
+              selected = defaultContextSize == size,
+              onClick = { onUpdateDefaultContextSize(size) },
+              label = { Text("$size") },
+              modifier = Modifier.weight(1f)
+            )
+          }
+        }
+      }
+    }
 
     Card(Modifier.fillMaxWidth()) {
       Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -389,7 +433,6 @@ private fun AiHome(
 
     SettingCard("Model", if (modelStatus.startsWith("SUCCESS:")) "$modelName · Loaded" else modelStatus, openModel)
     SettingCard("Generation", "Thinking ON/OFF, Temperature, Top-K, Top-P, Min-P, Typical-P, repetition, seed", openGeneration)
-    ComingSoon("Context", "Context size and maximum output tokens are fixed by the current native runtime.")
     ComingSoon("Preset", "Presets are not saved until a persistent settings data store is implemented.")
     if (loading) LinearProgressIndicator(Modifier.fillMaxWidth())
   }

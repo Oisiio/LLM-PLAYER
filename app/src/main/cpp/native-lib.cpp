@@ -31,6 +31,8 @@ float g_default_min_p = kMinP;
 float g_default_typical_p = kTypicalP;
 int32_t g_n_threads = 4;
 int32_t g_n_threads_batch = 4;
+int32_t g_n_ctx = 512;
+constexpr int32_t kBatchSize = 512;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -276,11 +278,14 @@ std::string generate_sampling_locked(
     if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) repetition_penalty = 1.0f;
     std::vector<llama_token> tokens;
     if (!tokenize_prompt(formatted_prompt, tokens)) return "ERROR: llama_tokenize failed";
-    if (tokens.empty() || tokens.size() > 512) return "ERROR: invalid token count";
+    if (tokens.empty() || static_cast<int32_t>(tokens.size()) > g_n_ctx) return "ERROR: invalid token count";
     llama_memory_clear(llama_get_memory(g_context), true);
     const auto t_prompt_start = std::chrono::steady_clock::now();
-    llama_batch batch = llama_batch_get_one(tokens.data(), static_cast<int32_t>(tokens.size()));
-    if (llama_decode(g_context, batch) != 0) return "ERROR: llama_decode failed";
+    for (size_t offset = 0; offset < tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
+        const size_t chunk_size = std::min(tokens.size() - offset, static_cast<size_t>(kBatchSize));
+        llama_batch chunk_batch = llama_batch_get_one(tokens.data() + offset, static_cast<int32_t>(chunk_size));
+        if (llama_decode(g_context, chunk_batch) != 0) return "ERROR: llama_decode failed";
+    }
     const auto t_prompt_end = std::chrono::steady_clock::now();
     const double prompt_processing_time_ms = std::chrono::duration<double, std::milli>(t_prompt_end - t_prompt_start).count();
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
@@ -288,7 +293,7 @@ std::string generate_sampling_locked(
     const int32_t vocab_size = llama_vocab_n_tokens(vocab);
     if (vocab_size <= 0) return "ERROR: invalid vocabulary size";
     constexpr int32_t kMaxGenTokens = 128;
-    constexpr int32_t kMaxContextTokens = 512;
+    const int32_t max_context_tokens = g_n_ctx;
     constexpr const char * kStopSequence = "<END>";
     const std::string stop_report = stop_tokenization_report(vocab, kStopSequence);
     std::mt19937 rng;
@@ -302,7 +307,7 @@ std::string generate_sampling_locked(
     std::chrono::steady_clock::time_point t_first_token;
     std::string stop_reason = "MAX_TOKENS";
     for (int32_t i = 0; i < kMaxGenTokens; ++i) {
-        if (static_cast<int32_t>(tokens.size()) + generated_count >= kMaxContextTokens) { stop_reason = "MAX_CONTEXT"; break; }
+        if (static_cast<int32_t>(tokens.size()) + generated_count >= max_context_tokens) { stop_reason = "MAX_CONTEXT"; break; }
         const float * logits = llama_get_logits(g_context);
         if (logits == nullptr) return "ERROR: logits are unavailable";
         std::vector<float> penalized_logits;
@@ -407,8 +412,8 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeLoadMod
     g_model = llama_model_load_from_file(path, model_params);
     if (g_model == nullptr) { env->ReleaseStringUTFChars(model_path, path); return env->NewStringUTF("ERROR: llama_model_load_from_file failed"); }
     llama_context_params context_params = llama_context_default_params();
-    context_params.n_ctx = 512;
-    context_params.n_batch = 512;
+    context_params.n_ctx = g_n_ctx;
+    context_params.n_batch = kBatchSize;
     context_params.n_threads = g_n_threads;
     context_params.n_threads_batch = g_n_threads_batch;
     g_context = llama_init_from_model(g_model, context_params);
@@ -514,6 +519,49 @@ Java_com_example_MainActivity_nativeSetThreads(
     if (g_context != nullptr) {
         llama_set_n_threads(g_context, g_n_threads, g_n_threads_batch);
     }
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_MainActivity_nativeSetContextSize(
+        JNIEnv* /* env */, jobject /* this */, jint n_ctx) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    if (n_ctx != 512 && n_ctx != 1024 && n_ctx != 2048 && n_ctx != 4096) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "nativeSetContextSize: invalid n_ctx=%d", n_ctx);
+        return JNI_FALSE;
+    }
+    const int32_t target_ctx = static_cast<int32_t>(n_ctx);
+    if (target_ctx == g_n_ctx && g_context != nullptr) return JNI_TRUE;
+
+    // If a model is currently loaded, re-initialize g_context safely
+    if (g_model != nullptr) {
+        llama_context_params context_params = llama_context_default_params();
+        context_params.n_ctx = target_ctx;
+        context_params.n_batch = kBatchSize;
+        context_params.n_threads = g_n_threads;
+        context_params.n_threads_batch = g_n_threads_batch;
+
+        llama_context * new_context = llama_init_from_model(g_model, context_params);
+        if (new_context == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "nativeSetContextSize: llama_init_from_model failed for n_ctx=%d", target_ctx);
+            return JNI_FALSE;
+        }
+
+        if (g_context != nullptr) {
+            llama_free(g_context);
+        }
+        g_context = new_context;
+        g_n_ctx = target_ctx;
+    } else {
+        g_n_ctx = target_ctx;
+    }
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_MainActivity_nativeGetContextSize(
+        JNIEnv* /* env */, jobject /* this */) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    return static_cast<jint>(g_n_ctx);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeUnloadModel(JNIEnv* /* env */, jobject /* this */) {
