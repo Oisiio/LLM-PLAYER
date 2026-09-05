@@ -54,6 +54,7 @@ data class Character(
 
 object LlmDefaultSettings {
     const val CONTEXT_SIZE: Int = 512
+    const val MAX_OUTPUT_TOKENS: Int = 128
     const val TEMPERATURE: Float = 0.7f
     const val TOP_K: Int = 40
     const val TOP_P: Float = 0.9f

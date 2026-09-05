@@ -33,6 +33,7 @@ int32_t g_n_threads = 4;
 int32_t g_n_threads_batch = 4;
 int32_t g_n_ctx = 512;
 constexpr int32_t kBatchSize = 512;
+int32_t g_max_gen_tokens = 128;
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -292,7 +293,7 @@ std::string generate_sampling_locked(
     if (vocab == nullptr) return "ERROR: vocab is unavailable";
     const int32_t vocab_size = llama_vocab_n_tokens(vocab);
     if (vocab_size <= 0) return "ERROR: invalid vocabulary size";
-    constexpr int32_t kMaxGenTokens = 128;
+    const int32_t max_gen_tokens = g_max_gen_tokens > 0 ? g_max_gen_tokens : 128;
     const int32_t max_context_tokens = g_n_ctx;
     constexpr const char * kStopSequence = "<END>";
     const std::string stop_report = stop_tokenization_report(vocab, kStopSequence);
@@ -302,11 +303,11 @@ std::string generate_sampling_locked(
     std::string generated_text;
     int32_t generated_count = 0;
     std::vector<llama_token> generated_tokens;
-    generated_tokens.reserve(kMaxGenTokens);
+    generated_tokens.reserve(static_cast<size_t>(max_gen_tokens));
     bool first_token_determined = false;
     std::chrono::steady_clock::time_point t_first_token;
     std::string stop_reason = "MAX_TOKENS";
-    for (int32_t i = 0; i < kMaxGenTokens; ++i) {
+    for (int32_t i = 0; i < max_gen_tokens; ++i) {
         if (static_cast<int32_t>(tokens.size()) + generated_count >= max_context_tokens) { stop_reason = "MAX_CONTEXT"; break; }
         const float * logits = llama_get_logits(g_context);
         if (logits == nullptr) return "ERROR: logits are unavailable";
@@ -352,7 +353,7 @@ std::string generate_sampling_locked(
             }
         }
         if (stopped_by_additional) break;
-        if (generated_count >= kMaxGenTokens) { stop_reason = "MAX_TOKENS"; break; }
+        if (generated_count >= max_gen_tokens) { stop_reason = "MAX_TOKENS"; break; }
         llama_token next_token = current_token;
         llama_batch token_batch = llama_batch_get_one(&next_token, 1);
         if (llama_decode(g_context, token_batch) != 0) return "ERROR: llama_decode failed";
@@ -562,6 +563,25 @@ Java_com_example_MainActivity_nativeGetContextSize(
         JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     return static_cast<jint>(g_n_ctx);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_MainActivity_nativeSetMaxOutputTokens(
+        JNIEnv* /* env */, jobject /* this */, jint max_output_tokens) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    if (max_output_tokens <= 0) {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "nativeSetMaxOutputTokens: invalid max_output_tokens=%d", max_output_tokens);
+        return JNI_FALSE;
+    }
+    g_max_gen_tokens = static_cast<int32_t>(max_output_tokens);
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jint JNICALL
+Java_com_example_MainActivity_nativeGetMaxOutputTokens(
+        JNIEnv* /* env */, jobject /* this */) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    return static_cast<jint>(g_max_gen_tokens);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeUnloadModel(JNIEnv* /* env */, jobject /* this */) {

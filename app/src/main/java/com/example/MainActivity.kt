@@ -63,6 +63,8 @@ class MainActivity : ComponentActivity() {
   private external fun nativeSetThreads(nThreads: Int, nThreadsBatch: Int)
   private external fun nativeSetContextSize(nCtx: Int): Boolean
   private external fun nativeGetContextSize(): Int
+  private external fun nativeSetMaxOutputTokens(maxOutputTokens: Int): Boolean
+  private external fun nativeGetMaxOutputTokens(): Int
   private external fun nativeGenerateWithSampling(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
@@ -84,6 +86,7 @@ class MainActivity : ComponentActivity() {
   private var defaultTopK by mutableIntStateOf(40)
   private var defaultTopP by mutableFloatStateOf(0.9f)
   private var defaultContextSize by mutableIntStateOf(512)
+  private var defaultMaxOutputTokens by mutableIntStateOf(128)
 
   private val talkViewModel by lazy {
     TalkViewModel(applicationContext, object : LlmStreamRunner {
@@ -161,8 +164,10 @@ class MainActivity : ComponentActivity() {
     defaultTopK = talkViewModel.repository.getDefaultTopK()
     defaultTopP = talkViewModel.repository.getDefaultTopP()
     defaultContextSize = talkViewModel.repository.getDefaultContextSize()
+    defaultMaxOutputTokens = talkViewModel.repository.getDefaultMaxOutputTokens()
     nativeSetThreads(cpuThreads, cpuThreadsBatch)
     nativeSetContextSize(defaultContextSize)
+    nativeSetMaxOutputTokens(defaultMaxOutputTokens)
     setContent {
       MyApplicationTheme {
         PlayerApp(
@@ -174,6 +179,7 @@ class MainActivity : ComponentActivity() {
           defaultTopK = defaultTopK,
           defaultTopP = defaultTopP,
           defaultContextSize = defaultContextSize,
+          defaultMaxOutputTokens = defaultMaxOutputTokens,
           onUpdateThreads = { threads, batchThreads ->
             cpuThreads = threads
             cpuThreadsBatch = batchThreads
@@ -199,6 +205,11 @@ class MainActivity : ComponentActivity() {
             defaultContextSize = size
             talkViewModel.repository.setDefaultContextSize(size)
             nativeSetContextSize(size)
+          },
+          onUpdateDefaultMaxOutputTokens = { tokens ->
+            defaultMaxOutputTokens = tokens
+            talkViewModel.repository.setDefaultMaxOutputTokens(tokens)
+            nativeSetMaxOutputTokens(tokens)
           },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
@@ -247,11 +258,13 @@ private fun PlayerApp(
   cpuThreads: Int, cpuThreadsBatch: Int,
   defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
   defaultContextSize: Int,
+  defaultMaxOutputTokens: Int,
   onUpdateThreads: (Int, Int) -> Unit,
   onUpdateDefaultTemperature: (Float) -> Unit,
   onUpdateDefaultTopK: (Int) -> Unit,
   onUpdateDefaultTopP: (Float) -> Unit,
   onUpdateDefaultContextSize: (Int) -> Unit,
+  onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
   onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit
 ) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
@@ -274,6 +287,7 @@ private fun PlayerApp(
             defaultTemperature, defaultTopK, defaultTopP,
             onUpdateDefaultTemperature, onUpdateDefaultTopK, onUpdateDefaultTopP,
             defaultContextSize, onUpdateDefaultContextSize,
+            defaultMaxOutputTokens, onUpdateDefaultMaxOutputTokens,
             { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION }
           )
           AiPage.MODEL -> ModelScreen(modelName, modelStatus, loading, onPickModel, onUnload, { aiPage = AiPage.HOME })
@@ -303,6 +317,8 @@ private fun AiHome(
   onUpdateDefaultTopP: (Float) -> Unit,
   defaultContextSize: Int,
   onUpdateDefaultContextSize: (Int) -> Unit,
+  defaultMaxOutputTokens: Int,
+  onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
   openModel: () -> Unit, openGeneration: () -> Unit
 ) {
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -330,6 +346,34 @@ private fun AiHome(
               selected = defaultContextSize == size,
               onClick = { onUpdateDefaultContextSize(size) },
               label = { Text("$size") },
+              modifier = Modifier.weight(1f)
+            )
+          }
+        }
+      }
+    }
+
+    Card(Modifier.fillMaxWidth()) {
+      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(
+          Modifier.fillMaxWidth(),
+          horizontalArrangement = Arrangement.SpaceBetween,
+          verticalAlignment = Alignment.CenterVertically
+        ) {
+          Text("Max Output Tokens", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+          Text("$defaultMaxOutputTokens tokens", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+        }
+        Text(
+          "一度の生成で出力できる最大トークン数です。",
+          style = MaterialTheme.typography.bodySmall,
+          color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+          listOf(64, 128, 256, 512).forEach { tokens ->
+            FilterChip(
+              selected = defaultMaxOutputTokens == tokens,
+              onClick = { onUpdateDefaultMaxOutputTokens(tokens) },
+              label = { Text("$tokens") },
               modifier = Modifier.weight(1f)
             )
           }

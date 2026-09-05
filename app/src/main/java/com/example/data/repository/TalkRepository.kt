@@ -68,6 +68,11 @@ class TalkRepository(private val context: Context) {
         prefs.edit().putInt("default_context_size", value).apply()
     }
 
+    fun getDefaultMaxOutputTokens(): Int = prefs.getInt("default_max_output_tokens", LlmDefaultSettings.MAX_OUTPUT_TOKENS)
+    fun setDefaultMaxOutputTokens(value: Int) {
+        prefs.edit().putInt("default_max_output_tokens", value).apply()
+    }
+
     fun refreshCharacters() {
         val list = dbHelper.getAllCharacters()
         _characters.value = list
