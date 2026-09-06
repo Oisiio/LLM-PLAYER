@@ -28,16 +28,13 @@ jobs:
           old = 'std::atomic<bool> g_cancel_generation{false};'
           assert s.count(old) == 1
           s = s.replace(old, 'std::atomic<bool> g_cancel_talk_generation{false};\nstd::atomic<bool> g_cancel_ai_generation{false};', 1)
-
           old_sig = '''    const std::function<void(double)> & on_ttft = nullptr,\n    const std::function<void(int32_t, int32_t, double, double, double, double, double, int32_t)> & on_metrics = nullptr\n) {'''
           new_sig = '''    const std::function<void(double)> & on_ttft = nullptr,\n    const std::function<void(int32_t, int32_t, double, double, double, double, double, int32_t)> & on_metrics = nullptr,\n    const std::atomic<bool> * cancel_flag = nullptr\n) {'''
           assert s.count(old_sig) == 1
           s = s.replace(old_sig, new_sig, 1)
-
           old_check = 'if (g_cancel_generation.load()) {'
           assert s.count(old_check) >= 1
           s = s.replace(old_check, 'if (cancel_flag != nullptr && cancel_flag->load()) {')
-
           def patch_function(body, name, flag):
               start = body.find(name)
               assert start >= 0, name
@@ -75,10 +72,8 @@ jobs:
               before += f'\n        &{flag}'
               part = before + part[close:]
               return body[:start] + part + body[end:]
-
           s = patch_function(s, 'Java_com_example_MainActivity_nativeGenerateWithSampling(', 'g_cancel_ai_generation')
           s = patch_function(s, 'Java_com_example_MainActivity_nativeGenerateStream(', 'g_cancel_talk_generation')
-
           old_cancel = '''extern "C" JNIEXPORT void JNICALL\nJava_com_example_MainActivity_nativeCancelGeneration(JNIEnv * /* env */, jobject /* this */) {\n    g_cancel_generation.store(true);\n}'''
           new_cancel = '''extern "C" JNIEXPORT void JNICALL\nJava_com_example_MainActivity_nativeCancelGeneration(JNIEnv * /* env */, jobject /* this */) {\n    g_cancel_talk_generation.store(true);\n}\n\nextern "C" JNIEXPORT void JNICALL\nJava_com_example_MainActivity_nativeCancelAiGeneration(JNIEnv * /* env */, jobject /* this */) {\n    g_cancel_ai_generation.store(true);\n}'''
           assert old_cancel in s
@@ -102,7 +97,7 @@ jobs:
           p.write_text(s)
 
       - name: Build debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon
+        run: bash ./gradlew :app:assembleDebug --no-daemon
 
       - name: Commit fix
         run: |
