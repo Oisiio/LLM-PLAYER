@@ -3,6 +3,7 @@
 #include <sys/stat.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -34,6 +35,7 @@ int32_t g_n_threads_batch = 4;
 int32_t g_n_ctx = 512;
 constexpr int32_t kBatchSize = 512;
 int32_t g_max_gen_tokens = 128;
+std::atomic<bool> g_cancel_generation{false};
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -283,6 +285,10 @@ std::string generate_sampling_locked(
     llama_memory_clear(llama_get_memory(g_context), true);
     const auto t_prompt_start = std::chrono::steady_clock::now();
     for (size_t offset = 0; offset < tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
+        if (g_cancel_generation.load()) {
+            if (out_raw_text != nullptr) *out_raw_text = "";
+            return "USER_CANCEL";
+        }
         const size_t chunk_size = std::min(tokens.size() - offset, static_cast<size_t>(kBatchSize));
         llama_batch chunk_batch = llama_batch_get_one(tokens.data() + offset, static_cast<int32_t>(chunk_size));
         if (llama_decode(g_context, chunk_batch) != 0) return "ERROR: llama_decode failed";
@@ -308,6 +314,7 @@ std::string generate_sampling_locked(
     std::chrono::steady_clock::time_point t_first_token;
     std::string stop_reason = "MAX_TOKENS";
     for (int32_t i = 0; i < max_gen_tokens; ++i) {
+        if (g_cancel_generation.load()) { stop_reason = "USER_CANCEL"; break; }
         if (static_cast<int32_t>(tokens.size()) + generated_count >= max_context_tokens) { stop_reason = "MAX_CONTEXT"; break; }
         const float * logits = llama_get_logits(g_context);
         if (logits == nullptr) return "ERROR: logits are unavailable";
@@ -354,6 +361,7 @@ std::string generate_sampling_locked(
         }
         if (stopped_by_additional) break;
         if (generated_count >= max_gen_tokens) { stop_reason = "MAX_TOKENS"; break; }
+        if (g_cancel_generation.load()) { stop_reason = "USER_CANCEL"; break; }
         llama_token next_token = current_token;
         llama_batch token_batch = llama_batch_get_one(&next_token, 1);
         if (llama_decode(g_context, token_batch) != 0) return "ERROR: llama_decode failed";
@@ -426,6 +434,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeLoadMod
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeRunTestInference(JNIEnv* env, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked("こんにちは。短く自己紹介してください。");
     return env->NewStringUTF(result.c_str());
@@ -438,6 +447,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeEchoPro
     const std::string prompt_text(prompt_chars);
     env->ReleaseStringUTFChars(prompt, prompt_chars);
     std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text);
     return env->NewStringUTF(result.c_str());
@@ -450,6 +460,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     const std::string prompt_text(prompt_chars);
     env->ReleaseStringUTFChars(prompt, prompt_chars);
     std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature));
     return env->NewStringUTF(result.c_str());
@@ -462,6 +473,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     const std::string prompt_text(prompt_chars);
     env->ReleaseStringUTFChars(prompt, prompt_chars);
     std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature), static_cast<int32_t>(top_k));
     return env->NewStringUTF(result.c_str());
@@ -474,6 +486,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     const std::string prompt_text(prompt_chars);
     env->ReleaseStringUTFChars(prompt, prompt_chars);
     std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature), static_cast<int32_t>(top_k), static_cast<float>(top_p), g_default_min_p);
     return env->NewStringUTF(result.c_str());
@@ -486,6 +499,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     const std::string prompt_text(prompt_chars);
     env->ReleaseStringUTFChars(prompt, prompt_chars);
     std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature), static_cast<int32_t>(top_k), static_cast<float>(top_p), static_cast<float>(min_p));
     return env->NewStringUTF(result.c_str());
@@ -603,6 +617,7 @@ Java_com_example_MainActivity_nativeGenerateWithSampling(
     if (chars == nullptr) return env->NewStringUTF("ERROR: prompt unavailable");
     const std::string result = [&]() {
         std::lock_guard<std::mutex> lock(g_model_mutex);
+        g_cancel_generation.store(false);
         if (g_model == nullptr || g_context == nullptr) return std::string("ERROR: model is not loaded");
         return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed, enable_thinking == JNI_TRUE);
     }();
@@ -631,6 +646,7 @@ Java_com_example_MainActivity_nativeGenerateStream(
     std::string status_or_err;
     {
         std::lock_guard<std::mutex> lock(g_model_mutex);
+        g_cancel_generation.store(false);
         if (g_model == nullptr || g_context == nullptr) {
             env->ReleaseStringUTFChars(prompt, chars);
             return env->NewStringUTF("ERROR: model is not loaded");
@@ -673,4 +689,9 @@ Java_com_example_MainActivity_nativeGenerateStream(
         return env->NewStringUTF(status_or_err.c_str());
     }
     return env->NewStringUTF(raw_text.c_str());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_MainActivity_nativeCancelGeneration(JNIEnv * /* env */, jobject /* this */) {
+    g_cancel_generation.store(true);
 }

@@ -65,6 +65,7 @@ class MainActivity : ComponentActivity() {
   private external fun nativeGetContextSize(): Int
   private external fun nativeSetMaxOutputTokens(maxOutputTokens: Int): Boolean
   private external fun nativeGetMaxOutputTokens(): Int
+  private external fun nativeCancelGeneration()
   private external fun nativeGenerateWithSampling(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
@@ -91,6 +92,9 @@ class MainActivity : ComponentActivity() {
   private val talkViewModel by lazy {
     TalkViewModel(applicationContext, object : LlmStreamRunner {
       override fun isModelLoaded(): Boolean = nativeIsModelLoaded()
+      override fun cancelGeneration() {
+        nativeCancelGeneration()
+      }
       override suspend fun runStreamingInference(
         prompt: String,
         temperature: Float,
@@ -213,6 +217,7 @@ class MainActivity : ComponentActivity() {
           },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
+          onCancelGenerate = { nativeCancelGeneration() },
           onGenerate = { settings ->
             loading = true
             lifecycleScope.launch {
@@ -265,7 +270,9 @@ private fun PlayerApp(
   onUpdateDefaultTopP: (Float) -> Unit,
   onUpdateDefaultContextSize: (Int) -> Unit,
   onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
-  onPickModel: () -> Unit, onUnload: () -> Unit, onGenerate: (SamplingSettings) -> Unit
+  onPickModel: () -> Unit, onUnload: () -> Unit,
+  onCancelGenerate: () -> Unit,
+  onGenerate: (SamplingSettings) -> Unit
 ) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
   var aiPage by rememberSaveable { mutableStateOf(AiPage.HOME) }
@@ -294,7 +301,7 @@ private fun PlayerApp(
           AiPage.GENERATION -> GenerationScreen(
             output, loading,
             defaultTemperature, defaultTopK, defaultTopP,
-            onGenerate, { aiPage = AiPage.HOME }
+            onCancelGenerate, onGenerate, { aiPage = AiPage.HOME }
           )
         }
       }
@@ -504,6 +511,7 @@ private fun GenerationScreen(
   initialTemperature: Float,
   initialTopK: Int,
   initialTopP: Float,
+  onCancel: () -> Unit,
   onGenerate: (SamplingSettings) -> Unit,
   back: () -> Unit
 ) {
@@ -538,7 +546,20 @@ private fun GenerationScreen(
     }
     LabeledInput("Temperature", temperature, { temperature = it }); LabeledInput("Top-K", topK, { topK = it }); LabeledInput("Top-P", topP, { topP = it })
     LabeledInput("Min-P", minP, { minP = it }); LabeledInput("Typical-P", typicalP, { typicalP = it }); LabeledInput("Repetition Penalty", repeat, { repeat = it }); LabeledInput("Penalty Last N", lastN, { lastN = it }); LabeledInput("Seed", seed, { seed = it })
-    Button(onClick = { onGenerate(SamplingSettings(prompt, temperature.toFloatOrNull() ?: .7f, topK.toIntOrNull() ?: 40, topP.toFloatOrNull() ?: .9f, minP.toFloatOrNull() ?: 0f, typicalP.toFloatOrNull() ?: 1f, repeat.toFloatOrNull() ?: 1.1f, lastN.toIntOrNull() ?: 64, seed.toLongOrNull() ?: 12345L, enableThinking)) }, enabled = !loading && prompt.isNotBlank(), modifier = Modifier.fillMaxWidth().testTag("run_generation_button")) { Text(if (loading) "Generating…" else "Run local inference") }
+    Button(
+      onClick = {
+        if (loading) {
+          onCancel()
+        } else {
+          onGenerate(SamplingSettings(prompt, temperature.toFloatOrNull() ?: .7f, topK.toIntOrNull() ?: 40, topP.toFloatOrNull() ?: .9f, minP.toFloatOrNull() ?: 0f, typicalP.toFloatOrNull() ?: 1f, repeat.toFloatOrNull() ?: 1.1f, lastN.toIntOrNull() ?: 64, seed.toLongOrNull() ?: 12345L, enableThinking))
+        }
+      },
+      enabled = loading || prompt.isNotBlank(),
+      colors = if (loading) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
+      modifier = Modifier.fillMaxWidth().testTag("run_generation_button")
+    ) {
+      Text(if (loading) "Stop Generation" else "Run local inference")
+    }
     if (output.isNotBlank()) {
       Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
         Text(output, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)

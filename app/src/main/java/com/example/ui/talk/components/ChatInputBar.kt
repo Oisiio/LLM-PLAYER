@@ -11,6 +11,7 @@ import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -26,6 +27,7 @@ fun ChatInputBar(
     onTextChange: (String) -> Unit,
     onSend: () -> Unit,
     isStreaming: Boolean,
+    onStop: () -> Unit = {},
     modifier: Modifier = Modifier
 ) {
     Surface(
@@ -58,31 +60,45 @@ fun ChatInputBar(
                 maxLines = 6
             )
 
-            val hasValidText = text.trim().isNotEmpty()
-            AnimatedVisibility(
-                visible = hasValidText,
-                enter = fadeIn(),
-                exit = fadeOut()
-            ) {
+            if (isStreaming) {
                 IconButton(
-                    onClick = onSend,
-                    enabled = hasValidText && !isStreaming,
+                    onClick = onStop,
                     modifier = Modifier
                         .padding(start = 8.dp)
                         .size(44.dp)
                         .clip(CircleShape)
-                        .background(
-                            if (hasValidText && !isStreaming) MaterialTheme.colorScheme.primary
-                            else MaterialTheme.colorScheme.surfaceVariant
-                        )
-                        .testTag("send_button")
+                        .background(MaterialTheme.colorScheme.error)
+                        .testTag("stop_button")
                 ) {
                     Icon(
-                        imageVector = Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "送信",
-                        tint = if (hasValidText && !isStreaming) MaterialTheme.colorScheme.onPrimary
-                        else MaterialTheme.colorScheme.onSurfaceVariant
+                        imageVector = Icons.Filled.Stop,
+                        contentDescription = "停止",
+                        tint = MaterialTheme.colorScheme.onError
                     )
+                }
+            } else {
+                val hasValidText = text.trim().isNotEmpty()
+                AnimatedVisibility(
+                    visible = hasValidText,
+                    enter = fadeIn(),
+                    exit = fadeOut()
+                ) {
+                    IconButton(
+                        onClick = onSend,
+                        enabled = hasValidText,
+                        modifier = Modifier
+                            .padding(start = 8.dp)
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(MaterialTheme.colorScheme.primary)
+                            .testTag("send_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "送信",
+                            tint = MaterialTheme.colorScheme.onPrimary
+                        )
+                    }
                 }
             }
         }

@@ -52,6 +52,7 @@ fun ChatScreen(
     onDeleteChat: () -> Unit,
     onSaveChatSettings: (Chat) -> Unit,
     onBack: () -> Unit,
+    onStopGeneration: () -> Unit = {},
     undoDeletedMessages: (() -> Unit)? = null
 ) {
     val coroutineScope = rememberCoroutineScope()
@@ -299,7 +300,8 @@ fun ChatScreen(
                             }
                         }
                     },
-                    isStreaming = isStreaming
+                    isStreaming = isStreaming,
+                    onStop = onStopGeneration
                 )
             }
         }

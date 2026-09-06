@@ -127,6 +127,9 @@ fun TalkMainScreen(
                     onSaveChatSettings = { updated ->
                         viewModel.saveChatSettings(updated)
                     },
+                    onStopGeneration = {
+                        viewModel.cancelGeneration()
+                    },
                     onBack = {
                         val chats = viewModel.currentChats.value
                         if (chats.size > 1) {

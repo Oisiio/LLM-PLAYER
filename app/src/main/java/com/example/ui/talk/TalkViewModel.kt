@@ -30,6 +30,7 @@ sealed class TalkNavDestination {
 
 interface LlmStreamRunner {
     fun isModelLoaded(): Boolean
+    fun cancelGeneration()
     suspend fun runStreamingInference(
         prompt: String,
         temperature: Float,
@@ -248,6 +249,12 @@ class TalkViewModel(
     }
 
     // ==================== Message & Streaming Operations ====================
+
+    fun cancelGeneration() {
+        if (_isStreaming.value) {
+            llmRunner.cancelGeneration()
+        }
+    }
 
     fun sendMessage(character: Character, chat: Chat, userInput: String) {
         if (_isStreaming.value) return
