@@ -36,6 +36,8 @@ int32_t g_n_ctx = 512;
 constexpr int32_t kBatchSize = 512;
 int32_t g_max_gen_tokens = 128;
 std::atomic<bool> g_cancel_generation{false};
+std::atomic<bool> g_cancel_talk_generation{false};
+std::atomic<bool> g_cancel_ai_generation{false};
 
 std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
@@ -264,7 +266,8 @@ std::string generate_sampling_locked(
     const std::function<void(const char*, int32_t)> & on_token = nullptr,
     std::string * out_raw_text = nullptr,
     const std::function<void(double)> & on_ttft = nullptr,
-    const std::function<void(int32_t, int32_t, double, double, double, double, double, int32_t)> & on_metrics = nullptr
+    const std::function<void(int32_t, int32_t, double, double, double, double, double, int32_t)> & on_metrics = nullptr,
+    const std::atomic<bool> * cancel_flag = nullptr
 ) {
     std::string prompt_text = prompt_input;
     if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
@@ -285,7 +288,7 @@ std::string generate_sampling_locked(
     llama_memory_clear(llama_get_memory(g_context), true);
     const auto t_prompt_start = std::chrono::steady_clock::now();
     for (size_t offset = 0; offset < tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
-        if (g_cancel_generation.load()) {
+        if (cancel_flag != nullptr && cancel_flag->load()) {
             if (out_raw_text != nullptr) *out_raw_text = "";
             return "USER_CANCEL";
         }
@@ -314,7 +317,7 @@ std::string generate_sampling_locked(
     std::chrono::steady_clock::time_point t_first_token;
     std::string stop_reason = "MAX_TOKENS";
     for (int32_t i = 0; i < max_gen_tokens; ++i) {
-        if (g_cancel_generation.load()) { stop_reason = "USER_CANCEL"; break; }
+        if (cancel_flag != nullptr && cancel_flag->load()) { stop_reason = "USER_CANCEL"; break; }
         if (static_cast<int32_t>(tokens.size()) + generated_count >= max_context_tokens) { stop_reason = "MAX_CONTEXT"; break; }
         const float * logits = llama_get_logits(g_context);
         if (logits == nullptr) return "ERROR: logits are unavailable";
@@ -361,7 +364,7 @@ std::string generate_sampling_locked(
         }
         if (stopped_by_additional) break;
         if (generated_count >= max_gen_tokens) { stop_reason = "MAX_TOKENS"; break; }
-        if (g_cancel_generation.load()) { stop_reason = "USER_CANCEL"; break; }
+        if (cancel_flag != nullptr && cancel_flag->load()) { stop_reason = "USER_CANCEL"; break; }
         llama_token next_token = current_token;
         llama_batch token_batch = llama_batch_get_one(&next_token, 1);
         if (llama_decode(g_context, token_batch) != 0) return "ERROR: llama_decode failed";
@@ -617,9 +620,9 @@ Java_com_example_MainActivity_nativeGenerateWithSampling(
     if (chars == nullptr) return env->NewStringUTF("ERROR: prompt unavailable");
     const std::string result = [&]() {
         std::lock_guard<std::mutex> lock(g_model_mutex);
-        g_cancel_generation.store(false);
+        g_cancel_ai_generation.store(false);
         if (g_model == nullptr || g_context == nullptr) return std::string("ERROR: model is not loaded");
-        return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed, enable_thinking == JNI_TRUE);
+        return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed, enable_thinking == JNI_TRUE, nullptr, nullptr, nullptr, nullptr, &g_cancel_ai_generation);
     }();
     env->ReleaseStringUTFChars(prompt, chars);
     return env->NewStringUTF(result.c_str());
@@ -646,7 +649,7 @@ Java_com_example_MainActivity_nativeGenerateStream(
     std::string status_or_err;
     {
         std::lock_guard<std::mutex> lock(g_model_mutex);
-        g_cancel_generation.store(false);
+        g_cancel_talk_generation.store(false);
         if (g_model == nullptr || g_context == nullptr) {
             env->ReleaseStringUTFChars(prompt, chars);
             return env->NewStringUTF("ERROR: model is not loaded");
@@ -681,7 +684,8 @@ Java_com_example_MainActivity_nativeGenerateStream(
                         static_cast<jdouble>(speed),
                         static_cast<jint>(threads));
                 }
-            }
+            },
+            &g_cancel_talk_generation
         );
     }
     env->ReleaseStringUTFChars(prompt, chars);
@@ -693,5 +697,10 @@ Java_com_example_MainActivity_nativeGenerateStream(
 
 extern "C" JNIEXPORT void JNICALL
 Java_com_example_MainActivity_nativeCancelGeneration(JNIEnv * /* env */, jobject /* this */) {
-    g_cancel_generation.store(true);
+    g_cancel_talk_generation.store(true);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_MainActivity_nativeCancelAiGeneration(JNIEnv * /* env */, jobject /* this */) {
+    g_cancel_ai_generation.store(true);
 }

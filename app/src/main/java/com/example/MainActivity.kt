@@ -66,6 +66,7 @@ class MainActivity : ComponentActivity() {
   private external fun nativeSetMaxOutputTokens(maxOutputTokens: Int): Boolean
   private external fun nativeGetMaxOutputTokens(): Int
   private external fun nativeCancelGeneration()
+  private external fun nativeCancelAiGeneration()
   private external fun nativeGenerateWithSampling(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
@@ -217,7 +218,7 @@ class MainActivity : ComponentActivity() {
           },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
-          onCancelGenerate = { nativeCancelGeneration() },
+          onCancelGenerate = { nativeCancelAiGeneration() },
           onGenerate = { settings ->
             loading = true
             lifecycleScope.launch {
