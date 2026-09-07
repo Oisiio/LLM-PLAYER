@@ -237,6 +237,106 @@ std::string piece_for_token(const llama_vocab * vocab, llama_token token) {
     return std::string(buf, static_cast<size_t>(len));
 }
 
+void append_valid_utf8_to_utf16(
+    const std::string & input,
+    size_t & consumed,
+    std::vector<jchar> & output,
+    bool is_final_flush = false
+) {
+    consumed = 0;
+    const size_t len = input.size();
+    while (consumed < len) {
+        const uint8_t b0 = static_cast<uint8_t>(input[consumed]);
+        uint32_t cp = 0;
+        size_t needed = 0;
+
+        if (b0 <= 0x7F) {
+            cp = b0;
+            needed = 1;
+        } else if (b0 >= 0xC2 && b0 <= 0xDF) {
+            needed = 2;
+            if (len - consumed < needed) {
+                if (!is_final_flush) break;
+                cp = 0xFFFD;
+                needed = 1;
+            } else {
+                const uint8_t b1 = static_cast<uint8_t>(input[consumed + 1]);
+                if ((b1 & 0xC0) != 0x80) {
+                    cp = 0xFFFD;
+                    needed = 1;
+                } else {
+                    cp = ((b0 & 0x1F) << 6) | (b1 & 0x3F);
+                }
+            }
+        } else if (b0 >= 0xE0 && b0 <= 0xEF) {
+            needed = 3;
+            if (len - consumed < needed) {
+                if (!is_final_flush) break;
+                cp = 0xFFFD;
+                needed = 1;
+            } else {
+                const uint8_t b1 = static_cast<uint8_t>(input[consumed + 1]);
+                const uint8_t b2 = static_cast<uint8_t>(input[consumed + 2]);
+                const bool cont_ok = ((b1 & 0xC0) == 0x80) && ((b2 & 0xC0) == 0x80);
+                const bool overlong = (b0 == 0xE0 && b1 < 0xA0);
+                const bool surrogate = (b0 == 0xED && b1 >= 0xA0);
+                if (!cont_ok || overlong || surrogate) {
+                    cp = 0xFFFD;
+                    needed = 1;
+                } else {
+                    cp = ((b0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F);
+                }
+            }
+        } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+            needed = 4;
+            if (len - consumed < needed) {
+                if (!is_final_flush) break;
+                cp = 0xFFFD;
+                needed = 1;
+            } else {
+                const uint8_t b1 = static_cast<uint8_t>(input[consumed + 1]);
+                const uint8_t b2 = static_cast<uint8_t>(input[consumed + 2]);
+                const uint8_t b3 = static_cast<uint8_t>(input[consumed + 3]);
+                const bool cont_ok = ((b1 & 0xC0) == 0x80) && ((b2 & 0xC0) == 0x80) && ((b3 & 0xC0) == 0x80);
+                const bool overlong = (b0 == 0xF0 && b1 < 0x90);
+                const bool out_of_range = (b0 == 0xF4 && b1 >= 0x90);
+                if (!cont_ok || overlong || out_of_range) {
+                    cp = 0xFFFD;
+                    needed = 1;
+                } else {
+                    cp = ((b0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F);
+                }
+            }
+        } else {
+            cp = 0xFFFD;
+            needed = 1;
+        }
+
+        if (cp <= 0xFFFF) {
+            output.push_back(static_cast<jchar>(cp));
+        } else if (cp <= 0x10FFFF) {
+            cp -= 0x10000;
+            output.push_back(static_cast<jchar>(0xD800 + (cp >> 10)));
+            output.push_back(static_cast<jchar>(0xDC00 + (cp & 0x3FF)));
+        } else {
+            output.push_back(static_cast<jchar>(0xFFFD));
+        }
+
+        consumed += needed;
+    }
+}
+
+jstring new_jstring_from_utf8(JNIEnv * env, const std::string & input) {
+    if (input.empty()) {
+        return env->NewString(nullptr, 0);
+    }
+    size_t consumed = 0;
+    std::vector<jchar> utf16;
+    utf16.reserve(input.size());
+    append_valid_utf8_to_utf16(input, consumed, utf16, true);
+    return env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));
+}
+
 std::string stop_tokenization_report(const llama_vocab * vocab, const std::string & stop_sequence) {
     std::vector<llama_token> stop_tokens;
     const int32_t required_signed = llama_tokenize(vocab, stop_sequence.c_str(), static_cast<int32_t>(stop_sequence.size()), nullptr, 0, false, false);
@@ -440,7 +540,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeRunTest
     g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked("こんにちは。短く自己紹介してください。");
-    return env->NewStringUTF(result.c_str());
+    return new_jstring_from_utf8(env, result);
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeEchoPrompt(JNIEnv* env, jobject /* this */, jstring prompt) {
@@ -453,7 +553,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeEchoPro
     g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text);
-    return env->NewStringUTF(result.c_str());
+    return new_jstring_from_utf8(env, result);
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateWithTemperature(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature) {
@@ -466,7 +566,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature));
-    return env->NewStringUTF(result.c_str());
+    return new_jstring_from_utf8(env, result);
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateWithTemperatureAndTopK(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k) {
@@ -479,7 +579,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature), static_cast<int32_t>(top_k));
-    return env->NewStringUTF(result.c_str());
+    return new_jstring_from_utf8(env, result);
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateWithTemperatureTopKTopP(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p) {
@@ -492,7 +592,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature), static_cast<int32_t>(top_k), static_cast<float>(top_p), g_default_min_p);
-    return env->NewStringUTF(result.c_str());
+    return new_jstring_from_utf8(env, result);
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerateWithTemperatureTopKTopPMinP(JNIEnv* env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p, jfloat min_p) {
@@ -505,7 +605,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeGenerat
     g_cancel_generation.store(false);
     if (g_model == nullptr || g_context == nullptr) return env->NewStringUTF("ERROR: model/context is not loaded");
     const std::string result = generate_sampling_locked(prompt_text, static_cast<float>(temperature), static_cast<int32_t>(top_k), static_cast<float>(top_p), static_cast<float>(min_p));
-    return env->NewStringUTF(result.c_str());
+    return new_jstring_from_utf8(env, result);
 }
 
 extern "C" JNIEXPORT void JNICALL Java_com_example_MainActivity_nativeSetMinP(JNIEnv* /* env */, jobject /* this */, jfloat min_p) {
@@ -625,7 +725,7 @@ Java_com_example_MainActivity_nativeGenerateWithSampling(
         return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed, enable_thinking == JNI_TRUE, nullptr, nullptr, nullptr, nullptr, &g_cancel_ai_generation);
     }();
     env->ReleaseStringUTFChars(prompt, chars);
-    return env->NewStringUTF(result.c_str());
+    return new_jstring_from_utf8(env, result);
 }
 
 extern "C" JNIEXPORT jstring JNICALL
@@ -647,10 +747,13 @@ Java_com_example_MainActivity_nativeGenerateStream(
 
     std::string raw_text;
     std::string status_or_err;
+    std::string pending_utf8;
+
     {
         std::lock_guard<std::mutex> lock(g_model_mutex);
         g_cancel_talk_generation.store(false);
         if (g_model == nullptr || g_context == nullptr) {
+            if (cb_class != nullptr) env->DeleteLocalRef(cb_class);
             env->ReleaseStringUTFChars(prompt, chars);
             return env->NewStringUTF("ERROR: model is not loaded");
         }
@@ -659,10 +762,20 @@ Java_com_example_MainActivity_nativeGenerateStream(
             enable_thinking == JNI_TRUE,
             [&](const char * piece, int32_t len) {
                 if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {
-                    jstring jpiece = env->NewStringUTF(std::string(piece, static_cast<size_t>(len)).c_str());
-                    if (jpiece != nullptr) {
-                        env->CallVoidMethod(token_callback, on_token_mid, jpiece);
-                        env->DeleteLocalRef(jpiece);
+                    pending_utf8.append(piece, static_cast<size_t>(len));
+                    size_t consumed = 0;
+                    std::vector<jchar> utf16;
+                    append_valid_utf8_to_utf16(pending_utf8, consumed, utf16, false);
+                    if (consumed > 0) {
+                        pending_utf8.erase(0, consumed);
+                        jstring jpiece = env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));
+                        if (jpiece != nullptr) {
+                            env->CallVoidMethod(token_callback, on_token_mid, jpiece);
+                            env->DeleteLocalRef(jpiece);
+                            if (env->ExceptionCheck()) {
+                                env->ExceptionClear();
+                            }
+                        }
                     }
                 }
             },
@@ -670,6 +783,9 @@ Java_com_example_MainActivity_nativeGenerateStream(
             [&](double ttft_ms) {
                 if (token_callback != nullptr && on_ttft_mid != nullptr) {
                     env->CallVoidMethod(token_callback, on_ttft_mid, static_cast<jdouble>(ttft_ms));
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    }
                 }
             },
             [&](int32_t prompt_tokens, int32_t gen_tokens, double prompt_time_ms, double ttft_ms, double gen_time_ms, double total_time_ms, double speed, int32_t threads) {
@@ -683,16 +799,39 @@ Java_com_example_MainActivity_nativeGenerateStream(
                         static_cast<jdouble>(total_time_ms),
                         static_cast<jdouble>(speed),
                         static_cast<jint>(threads));
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    }
                 }
             },
             &g_cancel_talk_generation
         );
+
+        if (!g_cancel_talk_generation.load() && !pending_utf8.empty()) {
+            size_t consumed = 0;
+            std::vector<jchar> utf16;
+            append_valid_utf8_to_utf16(pending_utf8, consumed, utf16, true);
+            if (!utf16.empty() && token_callback != nullptr && on_token_mid != nullptr) {
+                jstring jpiece = env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
+                if (jpiece != nullptr) {
+                    env->CallVoidMethod(token_callback, on_token_mid, jpiece);
+                    env->DeleteLocalRef(jpiece);
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    }
+                }
+            }
+            pending_utf8.clear();
+        }
+    }
+    if (cb_class != nullptr) {
+        env->DeleteLocalRef(cb_class);
     }
     env->ReleaseStringUTFChars(prompt, chars);
     if (status_or_err.rfind("ERROR:", 0) == 0) {
-        return env->NewStringUTF(status_or_err.c_str());
+        return new_jstring_from_utf8(env, status_or_err);
     }
-    return env->NewStringUTF(raw_text.c_str());
+    return new_jstring_from_utf8(env, raw_text);
 }
 
 extern "C" JNIEXPORT void JNICALL
