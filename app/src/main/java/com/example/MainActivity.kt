@@ -24,6 +24,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
@@ -421,26 +422,66 @@ private fun GenerationScreen(
 }
 
 @Composable
-private fun PersistentNumberInput(label: String, value: String, keyboardType: KeyboardType, onCommit: (String) -> Boolean) {
-  var text by remember(value) { mutableStateOf(value) }
-  var committed by remember(value) { mutableStateOf(value) }
+private fun PersistentNumberInput(
+  label: String,
+  value: String,
+  keyboardType: KeyboardType,
+  onCommit: (String) -> Boolean
+) {
+  val focusManager = LocalFocusManager.current
+  var isFocused by remember { mutableStateOf(false) }
+  var text by remember { mutableStateOf(value) }
 
-  fun commit() {
-    if (text == committed) return
-    if (onCommit(text)) {
-      committed = text
-    } else {
-      text = committed
+  val currentText by rememberUpdatedState(text)
+  val currentValue by rememberUpdatedState(value)
+  val currentOnCommit by rememberUpdatedState(onCommit)
+
+  LaunchedEffect(value, isFocused) {
+    if (!isFocused) {
+      text = value
+    }
+  }
+
+  val commit = remember {
+    {
+      val trimmed = currentText.trim()
+      if (trimmed.isNotEmpty()) {
+        val success = currentOnCommit(trimmed)
+        if (!success) {
+          text = currentValue
+        }
+      } else {
+        text = currentValue
+      }
+    }
+  }
+
+  DisposableEffect(Unit) {
+    onDispose {
+      commit()
     }
   }
 
   OutlinedTextField(
     value = text,
     onValueChange = { text = it },
-    modifier = Modifier.fillMaxWidth().onFocusChanged { state -> if (!state.isFocused) commit() },
+    modifier = Modifier
+      .fillMaxWidth()
+      .onFocusChanged { state ->
+        if (isFocused && !state.isFocused) {
+          commit()
+        }
+        isFocused = state.isFocused
+      },
     label = { Text(label) },
+    singleLine = true,
     keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Done),
-    keyboardActions = KeyboardActions(onDone = { commit() })
+    keyboardActions = KeyboardActions(
+      onDone = {
+        commit()
+        focusManager.clearFocus()
+      }
+    )
   )
 }
 
