@@ -87,6 +87,10 @@ class MainActivity : ComponentActivity() {
   private var defaultTemperature by mutableFloatStateOf(0.7f)
   private var defaultTopK by mutableIntStateOf(40)
   private var defaultTopP by mutableFloatStateOf(0.9f)
+  private var defaultMinP by mutableFloatStateOf(0.0f)
+  private var defaultTypicalP by mutableFloatStateOf(1.0f)
+  private var defaultRepetitionPenalty by mutableFloatStateOf(1.1f)
+  private var defaultPenaltyLastN by mutableIntStateOf(64)
   private var defaultContextSize by mutableIntStateOf(512)
   private var defaultMaxOutputTokens by mutableIntStateOf(128)
   private var generationSeed by mutableStateOf("12345")
@@ -169,6 +173,10 @@ class MainActivity : ComponentActivity() {
     defaultTemperature = talkViewModel.repository.getDefaultTemperature()
     defaultTopK = talkViewModel.repository.getDefaultTopK()
     defaultTopP = talkViewModel.repository.getDefaultTopP()
+    defaultMinP = talkViewModel.repository.getDefaultMinP()
+    defaultTypicalP = talkViewModel.repository.getDefaultTypicalP()
+    defaultRepetitionPenalty = talkViewModel.repository.getDefaultRepetitionPenalty()
+    defaultPenaltyLastN = talkViewModel.repository.getDefaultPenaltyLastN()
     defaultContextSize = talkViewModel.repository.getDefaultContextSize()
     defaultMaxOutputTokens = talkViewModel.repository.getDefaultMaxOutputTokens()
     generationSeed = prefs.getString("generation_seed", "12345") ?: "12345"
@@ -185,6 +193,10 @@ class MainActivity : ComponentActivity() {
           defaultTemperature = defaultTemperature,
           defaultTopK = defaultTopK,
           defaultTopP = defaultTopP,
+          defaultMinP = defaultMinP,
+          defaultTypicalP = defaultTypicalP,
+          defaultRepetitionPenalty = defaultRepetitionPenalty,
+          defaultPenaltyLastN = defaultPenaltyLastN,
           defaultContextSize = defaultContextSize,
           defaultMaxOutputTokens = defaultMaxOutputTokens,
           generationSeed = generationSeed,
@@ -208,6 +220,22 @@ class MainActivity : ComponentActivity() {
           onUpdateDefaultTopP = { p ->
             defaultTopP = p
             talkViewModel.repository.setDefaultTopP(p)
+          },
+          onUpdateDefaultMinP = { p ->
+            defaultMinP = p
+            talkViewModel.repository.setDefaultMinP(p)
+          },
+          onUpdateDefaultTypicalP = { p ->
+            defaultTypicalP = p
+            talkViewModel.repository.setDefaultTypicalP(p)
+          },
+          onUpdateDefaultRepetitionPenalty = { penalty ->
+            defaultRepetitionPenalty = penalty
+            talkViewModel.repository.setDefaultRepetitionPenalty(penalty)
+          },
+          onUpdateDefaultPenaltyLastN = { lastN ->
+            defaultPenaltyLastN = lastN
+            talkViewModel.repository.setDefaultPenaltyLastN(lastN)
           },
           onUpdateDefaultContextSize = { size ->
             defaultContextSize = size
@@ -270,6 +298,8 @@ private fun PlayerApp(
   talkViewModel: TalkViewModel, modelStatus: String, modelName: String, output: String, loading: Boolean,
   cpuThreads: Int, cpuThreadsBatch: Int,
   defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
+  defaultMinP: Float, defaultTypicalP: Float,
+  defaultRepetitionPenalty: Float, defaultPenaltyLastN: Int,
   defaultContextSize: Int,
   defaultMaxOutputTokens: Int,
   generationSeed: String,
@@ -277,6 +307,10 @@ private fun PlayerApp(
   onUpdateDefaultTemperature: (Float) -> Unit,
   onUpdateDefaultTopK: (Int) -> Unit,
   onUpdateDefaultTopP: (Float) -> Unit,
+  onUpdateDefaultMinP: (Float) -> Unit,
+  onUpdateDefaultTypicalP: (Float) -> Unit,
+  onUpdateDefaultRepetitionPenalty: (Float) -> Unit,
+  onUpdateDefaultPenaltyLastN: (Int) -> Unit,
   onUpdateDefaultContextSize: (Int) -> Unit,
   onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
   onUpdateGenerationSeed: (String) -> Unit,
@@ -302,7 +336,9 @@ private fun PlayerApp(
             modelName, modelStatus, loading,
             cpuThreads, cpuThreadsBatch, onUpdateThreads,
             defaultTemperature, defaultTopK, defaultTopP,
+            defaultMinP, defaultTypicalP, defaultRepetitionPenalty, defaultPenaltyLastN,
             onUpdateDefaultTemperature, onUpdateDefaultTopK, onUpdateDefaultTopP,
+            onUpdateDefaultMinP, onUpdateDefaultTypicalP, onUpdateDefaultRepetitionPenalty, onUpdateDefaultPenaltyLastN,
             defaultContextSize, onUpdateDefaultContextSize,
             defaultMaxOutputTokens, onUpdateDefaultMaxOutputTokens,
             { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION }
@@ -311,6 +347,7 @@ private fun PlayerApp(
           AiPage.GENERATION -> GenerationScreen(
             output, loading,
             defaultTemperature, defaultTopK, defaultTopP,
+            defaultMinP, defaultTypicalP, defaultRepetitionPenalty, defaultPenaltyLastN,
             generationSeed, onUpdateGenerationSeed,
             onCancelGenerate, onGenerate, { aiPage = AiPage.HOME }
           )
@@ -330,9 +367,15 @@ private fun AiHome(
   modelName: String, modelStatus: String, loading: Boolean,
   cpuThreads: Int, cpuThreadsBatch: Int, onUpdateThreads: (Int, Int) -> Unit,
   defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
+  defaultMinP: Float, defaultTypicalP: Float,
+  defaultRepetitionPenalty: Float, defaultPenaltyLastN: Int,
   onUpdateDefaultTemperature: (Float) -> Unit,
   onUpdateDefaultTopK: (Int) -> Unit,
   onUpdateDefaultTopP: (Float) -> Unit,
+  onUpdateDefaultMinP: (Float) -> Unit,
+  onUpdateDefaultTypicalP: (Float) -> Unit,
+  onUpdateDefaultRepetitionPenalty: (Float) -> Unit,
+  onUpdateDefaultPenaltyLastN: (Int) -> Unit,
   defaultContextSize: Int,
   onUpdateDefaultContextSize: (Int) -> Unit,
   defaultMaxOutputTokens: Int,
@@ -465,9 +508,7 @@ private fun AiHome(
           }
           Slider(
             value = defaultTopK.toFloat(),
-            onValueChange = {
-              onUpdateDefaultTopK(it.toInt().coerceIn(1, 100))
-            },
+            onValueChange = { onUpdateDefaultTopK(it.toInt().coerceIn(1, 100)) },
             valueRange = 1f..100f,
             steps = 98
           )
@@ -490,6 +531,21 @@ private fun AiHome(
             steps = 18
           )
         }
+
+        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+        LabeledInput("Min-P", String.format(Locale.US, "%.2f", defaultMinP), { value ->
+          value.toFloatOrNull()?.let { onUpdateDefaultMinP(it.coerceIn(0.0f, 1.0f)) }
+        })
+        LabeledInput("Typical-P", String.format(Locale.US, "%.2f", defaultTypicalP), { value ->
+          value.toFloatOrNull()?.let { onUpdateDefaultTypicalP(it.coerceIn(0.0f, 1.0f)) }
+        })
+        LabeledInput("Repetition Penalty", String.format(Locale.US, "%.2f", defaultRepetitionPenalty), { value ->
+          value.toFloatOrNull()?.let { onUpdateDefaultRepetitionPenalty(it.coerceAtLeast(0.0f)) }
+        })
+        LabeledInput("Penalty Last N", defaultPenaltyLastN.toString(), { value ->
+          value.toIntOrNull()?.let { onUpdateDefaultPenaltyLastN(it.coerceAtLeast(0)) }
+        })
       }
     }
 
@@ -522,6 +578,10 @@ private fun GenerationScreen(
   initialTemperature: Float,
   initialTopK: Int,
   initialTopP: Float,
+  initialMinP: Float,
+  initialTypicalP: Float,
+  initialRepetitionPenalty: Float,
+  initialPenaltyLastN: Int,
   seed: String,
   onSeedChange: (String) -> Unit,
   onCancel: () -> Unit,
@@ -532,10 +592,10 @@ private fun GenerationScreen(
   var temperature by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialTemperature)) }
   var topK by rememberSaveable { mutableStateOf(initialTopK.toString()) }
   var topP by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialTopP)) }
-  var minP by rememberSaveable { mutableStateOf("0.0") }
-  var typicalP by rememberSaveable { mutableStateOf("1.0") }
-  var repeat by rememberSaveable { mutableStateOf("1.1") }
-  var lastN by rememberSaveable { mutableStateOf("64") }
+  var minP by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialMinP)) }
+  var typicalP by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialTypicalP)) }
+  var repeat by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialRepetitionPenalty)) }
+  var lastN by rememberSaveable { mutableStateOf(initialPenaltyLastN.toString()) }
   var enableThinking by rememberSaveable { mutableStateOf(false) }
   ScreenHeader("Generation", back)
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
