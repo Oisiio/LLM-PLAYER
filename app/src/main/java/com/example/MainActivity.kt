@@ -31,6 +31,8 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.example.agent.AgentRunner
+import com.example.ui.agent.AgentScreen
 import com.example.ui.talk.LlmStreamRunner
 import com.example.ui.talk.TalkDebugMetrics
 import com.example.ui.talk.TalkMainScreen
@@ -101,8 +103,8 @@ class MainActivity : ComponentActivity() {
   private var defaultMaxOutputTokens by mutableIntStateOf(128)
   private var generationSeed by mutableStateOf("12345")
 
-  private val talkViewModel by lazy {
-    TalkViewModel(applicationContext, object : LlmStreamRunner {
+  private val llmStreamRunner: LlmStreamRunner by lazy {
+    object : LlmStreamRunner {
       override fun isModelLoaded(): Boolean = nativeIsModelLoaded()
       override fun cancelGeneration() { nativeCancelGeneration() }
       override suspend fun runStreamingInference(
@@ -133,7 +135,15 @@ class MainActivity : ComponentActivity() {
           }
         )
       }
-    })
+    }
+  }
+
+  private val talkViewModel by lazy {
+    TalkViewModel(applicationContext, llmStreamRunner)
+  }
+
+  private val agentRunner by lazy {
+    AgentRunner(llmStreamRunner)
   }
 
   private val modelPicker = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
@@ -208,7 +218,9 @@ class MainActivity : ComponentActivity() {
               }
               loading = false
             }
-          }
+          },
+          agentRunner = agentRunner,
+          isModelLoaded = nativeIsModelLoaded()
         )
       }
     }
@@ -249,7 +261,8 @@ private fun PlayerApp(
   onUpdateDefaultRepetitionPenalty: (Float) -> Unit, onUpdateDefaultPenaltyLastN: (Int) -> Unit,
   onUpdateDefaultContextSize: (Int) -> Unit, onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
   onUpdateGenerationSeed: (String) -> Unit, onPickModel: () -> Unit, onUnload: () -> Unit,
-  onCancelGenerate: () -> Unit, onGenerate: (SamplingSettings) -> Unit
+  onCancelGenerate: () -> Unit, onGenerate: (SamplingSettings) -> Unit,
+  agentRunner: AgentRunner, isModelLoaded: Boolean
 ) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
   var aiPage by rememberSaveable { mutableStateOf(AiPage.HOME) }
@@ -261,7 +274,7 @@ private fun PlayerApp(
     Surface(Modifier.fillMaxSize().padding(padding)) {
       when (destination) {
         Destination.TALK -> TalkMainScreen(talkViewModel)
-        Destination.AGENT -> UnavailableScreen("Agent", "Agent runs, tools, and memory require a native harness and are not available in this build.", "No tool controls are exposed until they can execute safely.")
+        Destination.AGENT -> AgentScreen(agentRunner = agentRunner, isModelLoaded = isModelLoaded)
         Destination.AI -> when (aiPage) {
           AiPage.HOME -> AiHome(
             modelName, modelStatus, loading, cpuThreads, cpuThreadsBatch, onUpdateThreads,
