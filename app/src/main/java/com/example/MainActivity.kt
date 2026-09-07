@@ -10,6 +10,8 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
@@ -21,8 +23,11 @@ import androidx.compose.runtime.*
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import com.example.ui.talk.LlmStreamRunner
@@ -98,58 +103,31 @@ class MainActivity : ComponentActivity() {
   private val talkViewModel by lazy {
     TalkViewModel(applicationContext, object : LlmStreamRunner {
       override fun isModelLoaded(): Boolean = nativeIsModelLoaded()
-      override fun cancelGeneration() {
-        nativeCancelGeneration()
-      }
+      override fun cancelGeneration() { nativeCancelGeneration() }
       override suspend fun runStreamingInference(
-        prompt: String,
-        temperature: Float,
-        topK: Int,
-        topP: Float,
-        minP: Float,
-        typicalP: Float,
-        repetitionPenalty: Float,
-        penaltyLastN: Int,
-        seed: Long,
-        enableThinking: Boolean,
-        onToken: (String) -> Unit,
-        onTtft: ((Double) -> Unit)?,
-        onMetrics: ((TalkDebugMetrics) -> Unit)?
+        prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
+        typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+        enableThinking: Boolean, onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)?, onMetrics: ((TalkDebugMetrics) -> Unit)?
       ): String = withContext(Dispatchers.Default) {
         if (!nativeIsModelLoaded()) return@withContext "ERROR: Model not loaded."
         nativeGenerateStream(
           prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
           penaltyLastN, seed, enableThinking,
           object : NativeTokenCallback {
-            override fun onToken(token: String) {
-              onToken(token)
-            }
-            override fun onTtft(ttftMs: Double) {
-              onTtft?.invoke(ttftMs)
-            }
+            override fun onToken(token: String) { onToken(token) }
+            override fun onTtft(ttftMs: Double) { onTtft?.invoke(ttftMs) }
             override fun onMetrics(
-              promptTokens: Int,
-              genTokens: Int,
-              promptTimeMs: Double,
-              ttftMs: Double,
-              genTimeMs: Double,
-              totalTimeMs: Double,
-              speed: Double,
-              threads: Int
+              promptTokens: Int, genTokens: Int, promptTimeMs: Double,
+              ttftMs: Double, genTimeMs: Double, totalTimeMs: Double,
+              speed: Double, threads: Int
             ) {
-              onMetrics?.invoke(
-                TalkDebugMetrics(
-                  ttftMs = ttftMs,
-                  promptTokens = promptTokens,
-                  genTokens = genTokens,
-                  promptTimeMs = promptTimeMs,
-                  genTimeMs = genTimeMs,
-                  totalTimeMs = totalTimeMs,
-                  speedTokPerSec = speed,
-                  threads = threads,
-                  isGenerating = false
-                )
-              )
+              onMetrics?.invoke(TalkDebugMetrics(
+                ttftMs = ttftMs, promptTokens = promptTokens, genTokens = genTokens,
+                promptTimeMs = promptTimeMs, genTimeMs = genTimeMs,
+                totalTimeMs = totalTimeMs, speedTokPerSec = speed,
+                threads = threads, isGenerating = false
+              ))
             }
           }
         )
@@ -188,69 +166,31 @@ class MainActivity : ComponentActivity() {
         PlayerApp(
           talkViewModel = talkViewModel,
           modelStatus = modelStatus, modelName = selectedModelName, output = output, loading = loading,
-          cpuThreads = cpuThreads,
-          cpuThreadsBatch = cpuThreadsBatch,
-          defaultTemperature = defaultTemperature,
-          defaultTopK = defaultTopK,
-          defaultTopP = defaultTopP,
-          defaultMinP = defaultMinP,
-          defaultTypicalP = defaultTypicalP,
-          defaultRepetitionPenalty = defaultRepetitionPenalty,
-          defaultPenaltyLastN = defaultPenaltyLastN,
-          defaultContextSize = defaultContextSize,
-          defaultMaxOutputTokens = defaultMaxOutputTokens,
+          cpuThreads = cpuThreads, cpuThreadsBatch = cpuThreadsBatch,
+          defaultTemperature = defaultTemperature, defaultTopK = defaultTopK, defaultTopP = defaultTopP,
+          defaultMinP = defaultMinP, defaultTypicalP = defaultTypicalP,
+          defaultRepetitionPenalty = defaultRepetitionPenalty, defaultPenaltyLastN = defaultPenaltyLastN,
+          defaultContextSize = defaultContextSize, defaultMaxOutputTokens = defaultMaxOutputTokens,
           generationSeed = generationSeed,
           onUpdateThreads = { threads, batchThreads ->
-            cpuThreads = threads
-            cpuThreadsBatch = batchThreads
+            cpuThreads = threads; cpuThreadsBatch = batchThreads
             nativeSetThreads(threads, batchThreads)
-            prefs.edit()
-              .putInt("cpu_threads", threads)
-              .putInt("cpu_threads_batch", batchThreads)
-              .apply()
+            prefs.edit().putInt("cpu_threads", threads).putInt("cpu_threads_batch", batchThreads).apply()
           },
-          onUpdateDefaultTemperature = { temp ->
-            defaultTemperature = temp
-            talkViewModel.repository.setDefaultTemperature(temp)
-          },
-          onUpdateDefaultTopK = { k ->
-            defaultTopK = k
-            talkViewModel.repository.setDefaultTopK(k)
-          },
-          onUpdateDefaultTopP = { p ->
-            defaultTopP = p
-            talkViewModel.repository.setDefaultTopP(p)
-          },
-          onUpdateDefaultMinP = { p ->
-            defaultMinP = p
-            talkViewModel.repository.setDefaultMinP(p)
-          },
-          onUpdateDefaultTypicalP = { p ->
-            defaultTypicalP = p
-            talkViewModel.repository.setDefaultTypicalP(p)
-          },
-          onUpdateDefaultRepetitionPenalty = { penalty ->
-            defaultRepetitionPenalty = penalty
-            talkViewModel.repository.setDefaultRepetitionPenalty(penalty)
-          },
-          onUpdateDefaultPenaltyLastN = { lastN ->
-            defaultPenaltyLastN = lastN
-            talkViewModel.repository.setDefaultPenaltyLastN(lastN)
-          },
+          onUpdateDefaultTemperature = { temp -> defaultTemperature = temp; talkViewModel.repository.setDefaultTemperature(temp) },
+          onUpdateDefaultTopK = { k -> defaultTopK = k; talkViewModel.repository.setDefaultTopK(k) },
+          onUpdateDefaultTopP = { p -> defaultTopP = p; talkViewModel.repository.setDefaultTopP(p) },
+          onUpdateDefaultMinP = { p -> defaultMinP = p; talkViewModel.repository.setDefaultMinP(p) },
+          onUpdateDefaultTypicalP = { p -> defaultTypicalP = p; talkViewModel.repository.setDefaultTypicalP(p) },
+          onUpdateDefaultRepetitionPenalty = { p -> defaultRepetitionPenalty = p; talkViewModel.repository.setDefaultRepetitionPenalty(p) },
+          onUpdateDefaultPenaltyLastN = { n -> defaultPenaltyLastN = n; talkViewModel.repository.setDefaultPenaltyLastN(n) },
           onUpdateDefaultContextSize = { size ->
-            defaultContextSize = size
-            talkViewModel.repository.setDefaultContextSize(size)
-            nativeSetContextSize(size)
+            defaultContextSize = size; talkViewModel.repository.setDefaultContextSize(size); nativeSetContextSize(size)
           },
           onUpdateDefaultMaxOutputTokens = { tokens ->
-            defaultMaxOutputTokens = tokens
-            talkViewModel.repository.setDefaultMaxOutputTokens(tokens)
-            nativeSetMaxOutputTokens(tokens)
+            defaultMaxOutputTokens = tokens; talkViewModel.repository.setDefaultMaxOutputTokens(tokens); nativeSetMaxOutputTokens(tokens)
           },
-          onUpdateGenerationSeed = { seed ->
-            generationSeed = seed
-            prefs.edit().putString("generation_seed", seed).apply()
-          },
+          onUpdateGenerationSeed = { seed -> generationSeed = seed; prefs.edit().putString("generation_seed", seed).apply() },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
           onCancelGenerate = { nativeCancelAiGeneration() },
@@ -259,9 +199,11 @@ class MainActivity : ComponentActivity() {
             lifecycleScope.launch {
               output = withContext(Dispatchers.Default) {
                 if (!nativeIsModelLoaded()) "ERROR: Load a GGUF model in AI > Model first."
-                else nativeGenerateWithSampling(settings.prompt, settings.temperature, settings.topK, settings.topP,
-                  settings.minP, settings.typicalP, settings.repetitionPenalty, settings.penaltyLastN, settings.seed,
-                  settings.enableThinking)
+                else nativeGenerateWithSampling(
+                  settings.prompt, settings.temperature, settings.topK, settings.topP,
+                  settings.minP, settings.typicalP, settings.repetitionPenalty,
+                  settings.penaltyLastN, settings.seed, settings.enableThinking
+                )
               }
               loading = false
             }
@@ -298,59 +240,42 @@ private fun PlayerApp(
   talkViewModel: TalkViewModel, modelStatus: String, modelName: String, output: String, loading: Boolean,
   cpuThreads: Int, cpuThreadsBatch: Int,
   defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
-  defaultMinP: Float, defaultTypicalP: Float,
-  defaultRepetitionPenalty: Float, defaultPenaltyLastN: Int,
-  defaultContextSize: Int,
-  defaultMaxOutputTokens: Int,
-  generationSeed: String,
+  defaultMinP: Float, defaultTypicalP: Float, defaultRepetitionPenalty: Float, defaultPenaltyLastN: Int,
+  defaultContextSize: Int, defaultMaxOutputTokens: Int, generationSeed: String,
   onUpdateThreads: (Int, Int) -> Unit,
-  onUpdateDefaultTemperature: (Float) -> Unit,
-  onUpdateDefaultTopK: (Int) -> Unit,
-  onUpdateDefaultTopP: (Float) -> Unit,
-  onUpdateDefaultMinP: (Float) -> Unit,
-  onUpdateDefaultTypicalP: (Float) -> Unit,
-  onUpdateDefaultRepetitionPenalty: (Float) -> Unit,
-  onUpdateDefaultPenaltyLastN: (Int) -> Unit,
-  onUpdateDefaultContextSize: (Int) -> Unit,
-  onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
-  onUpdateGenerationSeed: (String) -> Unit,
-  onPickModel: () -> Unit, onUnload: () -> Unit,
-  onCancelGenerate: () -> Unit,
-  onGenerate: (SamplingSettings) -> Unit
+  onUpdateDefaultTemperature: (Float) -> Unit, onUpdateDefaultTopK: (Int) -> Unit, onUpdateDefaultTopP: (Float) -> Unit,
+  onUpdateDefaultMinP: (Float) -> Unit, onUpdateDefaultTypicalP: (Float) -> Unit,
+  onUpdateDefaultRepetitionPenalty: (Float) -> Unit, onUpdateDefaultPenaltyLastN: (Int) -> Unit,
+  onUpdateDefaultContextSize: (Int) -> Unit, onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
+  onUpdateGenerationSeed: (String) -> Unit, onPickModel: () -> Unit, onUnload: () -> Unit,
+  onCancelGenerate: () -> Unit, onGenerate: (SamplingSettings) -> Unit
 ) {
   var destination by rememberSaveable { mutableStateOf(Destination.TALK) }
   var aiPage by rememberSaveable { mutableStateOf(AiPage.HOME) }
-  Scaffold(
-    bottomBar = { NavigationBar {
-      NavItem(Destination.TALK, destination, "Talk", Icons.Filled.Forum) { destination = Destination.TALK }
-      NavItem(Destination.AI, destination, "AI", Icons.Filled.Memory) { destination = Destination.AI; aiPage = AiPage.HOME }
-      NavItem(Destination.AGENT, destination, "Agent", Icons.Filled.SmartToy) { destination = Destination.AGENT }
-    } }
-  ) { padding ->
+  Scaffold(bottomBar = { NavigationBar {
+    NavItem(Destination.TALK, destination, "Talk", Icons.Filled.Forum) { destination = Destination.TALK }
+    NavItem(Destination.AI, destination, "AI", Icons.Filled.Memory) { destination = Destination.AI; aiPage = AiPage.HOME }
+    NavItem(Destination.AGENT, destination, "Agent", Icons.Filled.SmartToy) { destination = Destination.AGENT }
+  } }) { padding ->
     Surface(Modifier.fillMaxSize().padding(padding)) {
       when (destination) {
         Destination.TALK -> TalkMainScreen(talkViewModel)
         Destination.AGENT -> UnavailableScreen("Agent", "Agent runs, tools, and memory require a native harness and are not available in this build.", "No tool controls are exposed until they can execute safely.")
         Destination.AI -> when (aiPage) {
           AiPage.HOME -> AiHome(
-            modelName, modelStatus, loading,
-            cpuThreads, cpuThreadsBatch, onUpdateThreads,
-            defaultTemperature, defaultTopK, defaultTopP,
-            defaultMinP, defaultTypicalP, defaultRepetitionPenalty, defaultPenaltyLastN,
+            modelName, modelStatus, loading, cpuThreads, cpuThreadsBatch, onUpdateThreads,
+            defaultTemperature, defaultTopK, defaultTopP, defaultMinP, defaultTypicalP,
+            defaultRepetitionPenalty, defaultPenaltyLastN,
             onUpdateDefaultTemperature, onUpdateDefaultTopK, onUpdateDefaultTopP,
             onUpdateDefaultMinP, onUpdateDefaultTypicalP, onUpdateDefaultRepetitionPenalty, onUpdateDefaultPenaltyLastN,
-            defaultContextSize, onUpdateDefaultContextSize,
-            defaultMaxOutputTokens, onUpdateDefaultMaxOutputTokens,
+            defaultContextSize, onUpdateDefaultContextSize, defaultMaxOutputTokens, onUpdateDefaultMaxOutputTokens,
             { aiPage = AiPage.MODEL }, { aiPage = AiPage.GENERATION }
           )
-          AiPage.MODEL -> ModelScreen(modelName, modelStatus, loading, onPickModel, onUnload, { aiPage = AiPage.HOME })
+          AiPage.MODEL -> ModelScreen(modelName, modelStatus, loading, onPickModel, onUnload) { aiPage = AiPage.HOME }
           AiPage.GENERATION -> GenerationScreen(
-            output, loading,
-            defaultTemperature, defaultTopK, defaultTopP,
-            defaultMinP, defaultTypicalP, defaultRepetitionPenalty, defaultPenaltyLastN,
-            generationSeed, onUpdateGenerationSeed,
-            onCancelGenerate, onGenerate, { aiPage = AiPage.HOME }
-          )
+            output, loading, defaultTemperature, defaultTopK, defaultTopP, defaultMinP, defaultTypicalP,
+            defaultRepetitionPenalty, defaultPenaltyLastN, generationSeed, onUpdateGenerationSeed,
+            onCancelGenerate, onGenerate) { aiPage = AiPage.HOME }
         }
       }
     }
@@ -367,188 +292,74 @@ private fun AiHome(
   modelName: String, modelStatus: String, loading: Boolean,
   cpuThreads: Int, cpuThreadsBatch: Int, onUpdateThreads: (Int, Int) -> Unit,
   defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
-  defaultMinP: Float, defaultTypicalP: Float,
-  defaultRepetitionPenalty: Float, defaultPenaltyLastN: Int,
-  onUpdateDefaultTemperature: (Float) -> Unit,
-  onUpdateDefaultTopK: (Int) -> Unit,
-  onUpdateDefaultTopP: (Float) -> Unit,
-  onUpdateDefaultMinP: (Float) -> Unit,
-  onUpdateDefaultTypicalP: (Float) -> Unit,
-  onUpdateDefaultRepetitionPenalty: (Float) -> Unit,
-  onUpdateDefaultPenaltyLastN: (Int) -> Unit,
-  defaultContextSize: Int,
-  onUpdateDefaultContextSize: (Int) -> Unit,
-  defaultMaxOutputTokens: Int,
-  onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
+  defaultMinP: Float, defaultTypicalP: Float, defaultRepetitionPenalty: Float, defaultPenaltyLastN: Int,
+  onUpdateDefaultTemperature: (Float) -> Unit, onUpdateDefaultTopK: (Int) -> Unit, onUpdateDefaultTopP: (Float) -> Unit,
+  onUpdateDefaultMinP: (Float) -> Unit, onUpdateDefaultTypicalP: (Float) -> Unit,
+  onUpdateDefaultRepetitionPenalty: (Float) -> Unit, onUpdateDefaultPenaltyLastN: (Int) -> Unit,
+  defaultContextSize: Int, onUpdateDefaultContextSize: (Int) -> Unit,
+  defaultMaxOutputTokens: Int, onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
   openModel: () -> Unit, openGeneration: () -> Unit
 ) {
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
     Text("AI", style = MaterialTheme.typography.headlineMedium, fontWeight = FontWeight.Bold)
     Text("Configure the local LLM engine. Settings shown here are passed to the native sampler.")
-
-    Card(Modifier.fillMaxWidth()) {
-      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-          Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text("コンテキストサイズ", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-          Text("$defaultContextSize tokens", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        }
-        Text(
-          "会話で一度に扱えるトークン数です。大きくすると長いプロンプトを扱えます。",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          listOf(512, 1024, 2048, 4096).forEach { size ->
-            FilterChip(
-              selected = defaultContextSize == size,
-              onClick = { onUpdateDefaultContextSize(size) },
-              label = { Text("$size") },
-              modifier = Modifier.weight(1f)
-            )
-          }
-        }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text("コンテキストサイズ", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Text("$defaultContextSize tokens", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
       }
-    }
-
-    Card(Modifier.fillMaxWidth()) {
-      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Row(
-          Modifier.fillMaxWidth(),
-          horizontalArrangement = Arrangement.SpaceBetween,
-          verticalAlignment = Alignment.CenterVertically
-        ) {
-          Text("Max Output Tokens", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-          Text("$defaultMaxOutputTokens tokens", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-        }
-        Text(
-          "一度の生成で出力できる最大トークン数です。",
-          style = MaterialTheme.typography.bodySmall,
-          color = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-          listOf(64, 128, 256, 512).forEach { tokens ->
-            FilterChip(
-              selected = defaultMaxOutputTokens == tokens,
-              onClick = { onUpdateDefaultMaxOutputTokens(tokens) },
-              label = { Text("$tokens") },
-              modifier = Modifier.weight(1f)
-            )
-          }
-        }
+      Text("会話で一度に扱えるトークン数です。大きくすると長いプロンプトを扱えます。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(512, 1024, 2048, 4096).forEach { size -> FilterChip(selected = defaultContextSize == size, onClick = { onUpdateDefaultContextSize(size) }, label = { Text("$size") }, modifier = Modifier.weight(1f)) }
       }
-    }
-
-    Card(Modifier.fillMaxWidth()) {
-      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("CPUスレッド設定", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("CPUスレッド数", fontWeight = FontWeight.SemiBold)
-            Text("$cpuThreads", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-          }
-          Text("CPUスレッド数：テキスト生成時に使用するCPUスレッド数です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-          Slider(
-            value = cpuThreads.toFloat(),
-            onValueChange = { onUpdateThreads(it.toInt(), cpuThreadsBatch) },
-            valueRange = 1f..8f,
-            steps = 6
-          )
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("バッチスレッド数", fontWeight = FontWeight.SemiBold)
-            Text("$cpuThreadsBatch", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-          }
-          Text("バッチスレッド数：プロンプト処理時に使用するCPUスレッド数です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-          Slider(
-            value = cpuThreadsBatch.toFloat(),
-            onValueChange = { onUpdateThreads(cpuThreads, it.toInt()) },
-            valueRange = 1f..8f,
-            steps = 6
-          )
-        }
+    } }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+        Text("Max Output Tokens", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+        Text("$defaultMaxOutputTokens tokens", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
       }
-    }
-
-    Card(Modifier.fillMaxWidth()) {
-      Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-        Text("デフォルト生成パラメータ設定", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
-        Text("新規作成チャットおよび生成テスト画面の初期サンプリング設定です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
-
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Temperature", fontWeight = FontWeight.SemiBold)
-            Text(String.format(Locale.US, "%.2f", defaultTemperature), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-          }
-          Slider(
-            value = defaultTemperature,
-            onValueChange = {
-              val rounded = (Math.round(it * 20.0f) / 20.0f).coerceIn(0.0f, 2.0f)
-              onUpdateDefaultTemperature(rounded)
-            },
-            valueRange = 0.0f..2.0f,
-            steps = 39
-          )
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Top-K", fontWeight = FontWeight.SemiBold)
-            Text("$defaultTopK", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-          }
-          Slider(
-            value = defaultTopK.toFloat(),
-            onValueChange = { onUpdateDefaultTopK(it.toInt().coerceIn(1, 100)) },
-            valueRange = 1f..100f,
-            steps = 98
-          )
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-          Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-            Text("Top-P", fontWeight = FontWeight.SemiBold)
-            Text(String.format(Locale.US, "%.2f", defaultTopP), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-          }
-          Slider(
-            value = defaultTopP,
-            onValueChange = {
-              val rounded = (Math.round(it * 20.0f) / 20.0f).coerceIn(0.05f, 1.0f)
-              onUpdateDefaultTopP(rounded)
-            },
-            valueRange = 0.05f..1.0f,
-            steps = 18
-          )
-        }
-
-        HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
-
-        LabeledInput("Min-P", String.format(Locale.US, "%.2f", defaultMinP), { value ->
-          value.toFloatOrNull()?.let { onUpdateDefaultMinP(it.coerceIn(0.0f, 1.0f)) }
-        })
-        LabeledInput("Typical-P", String.format(Locale.US, "%.2f", defaultTypicalP), { value ->
-          value.toFloatOrNull()?.let { onUpdateDefaultTypicalP(it.coerceIn(0.0f, 1.0f)) }
-        })
-        LabeledInput("Repetition Penalty", String.format(Locale.US, "%.2f", defaultRepetitionPenalty), { value ->
-          value.toFloatOrNull()?.let { onUpdateDefaultRepetitionPenalty(it.coerceAtLeast(0.0f)) }
-        })
-        LabeledInput("Penalty Last N", defaultPenaltyLastN.toString(), { value ->
-          value.toIntOrNull()?.let { onUpdateDefaultPenaltyLastN(it.coerceAtLeast(0)) }
-        })
+      Text("一度の生成で出力できる最大トークン数です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        listOf(64, 128, 256, 512).forEach { tokens -> FilterChip(selected = defaultMaxOutputTokens == tokens, onClick = { onUpdateDefaultMaxOutputTokens(tokens) }, label = { Text("$tokens") }, modifier = Modifier.weight(1f)) }
       }
-    }
-
+    } }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      Text("CPUスレッド設定", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("CPUスレッド数", fontWeight = FontWeight.SemiBold); Text("$cpuThreads", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+        Text("CPUスレッド数：テキスト生成時に使用するCPUスレッド数です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Slider(value = cpuThreads.toFloat(), onValueChange = { onUpdateThreads(it.toInt(), cpuThreadsBatch) }, valueRange = 1f..8f, steps = 6)
+      }
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("バッチスレッド数", fontWeight = FontWeight.SemiBold); Text("$cpuThreadsBatch", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+        Text("バッチスレッド数：プロンプト処理時に使用するCPUスレッド数です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Slider(value = cpuThreadsBatch.toFloat(), onValueChange = { onUpdateThreads(cpuThreads, it.toInt()) }, valueRange = 1f..8f, steps = 6)
+      }
+    } }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+      Text("デフォルト生成パラメータ設定", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+      Text("新規作成チャットおよび生成テスト画面の初期サンプリング設定です。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Temperature", fontWeight = FontWeight.SemiBold); Text(String.format(Locale.US, "%.2f", defaultTemperature), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+        Slider(value = defaultTemperature, onValueChange = { val rounded = (Math.round(it * 20.0f) / 20.0f).coerceIn(0.0f, 2.0f); onUpdateDefaultTemperature(rounded) }, valueRange = 0.0f..2.0f, steps = 39)
+      }
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Top-K", fontWeight = FontWeight.SemiBold); Text("$defaultTopK", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+        Slider(value = defaultTopK.toFloat(), onValueChange = { onUpdateDefaultTopK(it.toInt().coerceIn(1, 100)) }, valueRange = 1f..100f, steps = 98)
+      }
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) { Text("Top-P", fontWeight = FontWeight.SemiBold); Text(String.format(Locale.US, "%.2f", defaultTopP), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary) }
+        Slider(value = defaultTopP, onValueChange = { val rounded = (Math.round(it * 20.0f) / 20.0f).coerceIn(0.05f, 1.0f); onUpdateDefaultTopP(rounded) }, valueRange = 0.05f..1.0f, steps = 18)
+      }
+      HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+      PersistentNumberInput("Min-P", String.format(Locale.US, "%.2f", defaultMinP), KeyboardType.Decimal) { value -> value.toFloatOrNull()?.let { onUpdateDefaultMinP(it.coerceIn(0.0f, 1.0f)); true } ?: false }
+      PersistentNumberInput("Typical-P", String.format(Locale.US, "%.2f", defaultTypicalP), KeyboardType.Decimal) { value -> value.toFloatOrNull()?.let { onUpdateDefaultTypicalP(it.coerceIn(0.0f, 1.0f)); true } ?: false }
+      PersistentNumberInput("Repetition Penalty", String.format(Locale.US, "%.2f", defaultRepetitionPenalty), KeyboardType.Decimal) { value -> value.toFloatOrNull()?.let { onUpdateDefaultRepetitionPenalty(it.coerceAtLeast(0.0f)); true } ?: false }
+      PersistentNumberInput("Penalty Last N", defaultPenaltyLastN.toString(), KeyboardType.Number) { value -> value.toIntOrNull()?.let { onUpdateDefaultPenaltyLastN(it.coerceAtLeast(0)); true } ?: false }
+    } }
     SettingCard("Model", if (modelStatus.startsWith("SUCCESS:")) "$modelName · Loaded" else modelStatus, openModel)
     SettingCard("Generation", "Thinking ON/OFF, Temperature, Top-K, Top-P, Min-P, Typical-P, repetition, seed", openGeneration)
     ComingSoon("Preset", "Presets are not saved until a persistent settings data store is implemented.")
@@ -560,10 +371,7 @@ private fun AiHome(
 private fun ModelScreen(modelName: String, modelStatus: String, loading: Boolean, onPick: () -> Unit, onUnload: () -> Unit, back: () -> Unit) {
   ScreenHeader("Model", back)
   Column(Modifier.fillMaxSize().padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(14.dp)) {
-    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) {
-      Text(modelName, fontWeight = FontWeight.Bold); Text("GGUF · stored in app-private storage")
-      Spacer(Modifier.height(8.dp)); Text(modelStatus, style = MaterialTheme.typography.bodySmall)
-    } }
+    Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp)) { Text(modelName, fontWeight = FontWeight.Bold); Text("GGUF · stored in app-private storage"); Spacer(Modifier.height(8.dp)); Text(modelStatus, style = MaterialTheme.typography.bodySmall) } }
     Button(onClick = onPick, enabled = !loading, modifier = Modifier.fillMaxWidth().testTag("add_model_button")) { Icon(Icons.Filled.Add, null); Spacer(Modifier.width(8.dp)); Text("Add Model") }
     OutlinedButton(onClick = onUnload, enabled = !loading && modelStatus.startsWith("SUCCESS:"), modifier = Modifier.fillMaxWidth()) { Text("Unload") }
     Text("Only the active model is managed currently. Multi-model inventory and deletion are Coming Soon.", style = MaterialTheme.typography.bodySmall)
@@ -573,20 +381,10 @@ private fun ModelScreen(modelName: String, modelStatus: String, loading: Boolean
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun GenerationScreen(
-  output: String,
-  loading: Boolean,
-  initialTemperature: Float,
-  initialTopK: Int,
-  initialTopP: Float,
-  initialMinP: Float,
-  initialTypicalP: Float,
-  initialRepetitionPenalty: Float,
-  initialPenaltyLastN: Int,
-  seed: String,
-  onSeedChange: (String) -> Unit,
-  onCancel: () -> Unit,
-  onGenerate: (SamplingSettings) -> Unit,
-  back: () -> Unit
+  output: String, loading: Boolean, initialTemperature: Float, initialTopK: Int, initialTopP: Float,
+  initialMinP: Float, initialTypicalP: Float, initialRepetitionPenalty: Float, initialPenaltyLastN: Int,
+  seed: String, onSeedChange: (String) -> Unit, onCancel: () -> Unit,
+  onGenerate: (SamplingSettings) -> Unit, back: () -> Unit
 ) {
   var prompt by rememberSaveable { mutableStateOf("") }
   var temperature by rememberSaveable { mutableStateOf(String.format(Locale.US, "%.2f", initialTemperature)) }
@@ -601,47 +399,53 @@ private fun GenerationScreen(
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
     Text("All controls below are sent directly to the native sampling pipeline.", style = MaterialTheme.typography.bodySmall)
     LabeledInput("Prompt", prompt, { prompt = it }, 3)
-    Row(
-      modifier = Modifier.fillMaxWidth(),
-      horizontalArrangement = Arrangement.SpaceBetween,
-      verticalAlignment = Alignment.CenterVertically
-    ) {
-      Column {
-        Text("Thinking", fontWeight = FontWeight.Bold)
-        Text(if (enableThinking) "ON" else "OFF", style = MaterialTheme.typography.bodySmall)
-      }
-      Switch(
-        checked = enableThinking,
-        onCheckedChange = { enableThinking = it },
-        modifier = Modifier.testTag("thinking_switch")
-      )
+    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+      Column { Text("Thinking", fontWeight = FontWeight.Bold); Text(if (enableThinking) "ON" else "OFF", style = MaterialTheme.typography.bodySmall) }
+      Switch(checked = enableThinking, onCheckedChange = { enableThinking = it }, modifier = Modifier.testTag("thinking_switch"))
     }
     LabeledInput("Temperature", temperature, { temperature = it }); LabeledInput("Top-K", topK, { topK = it }); LabeledInput("Top-P", topP, { topP = it })
     LabeledInput("Min-P", minP, { minP = it }); LabeledInput("Typical-P", typicalP, { typicalP = it }); LabeledInput("Repetition Penalty", repeat, { repeat = it }); LabeledInput("Penalty Last N", lastN, { lastN = it }); LabeledInput("Seed", seed, onSeedChange)
-    Button(
-      onClick = {
-        if (loading) {
-          onCancel()
-        } else {
-          onGenerate(SamplingSettings(prompt, temperature.toFloatOrNull() ?: .7f, topK.toIntOrNull() ?: 40, topP.toFloatOrNull() ?: .9f, minP.toFloatOrNull() ?: 0f, typicalP.toFloatOrNull() ?: 1f, repeat.toFloatOrNull() ?: 1.1f, lastN.toIntOrNull() ?: 64, seed.toLongOrNull() ?: 12345L, enableThinking))
-        }
-      },
-      enabled = loading || prompt.isNotBlank(),
-      colors = if (loading) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(),
-      modifier = Modifier.fillMaxWidth().testTag("run_generation_button")
-    ) {
+    Button(onClick = {
+      if (loading) onCancel() else onGenerate(SamplingSettings(
+        prompt, temperature.toFloatOrNull() ?: .7f, topK.toIntOrNull() ?: 40,
+        topP.toFloatOrNull() ?: .9f, minP.toFloatOrNull() ?: 0f,
+        typicalP.toFloatOrNull() ?: 1f, repeat.toFloatOrNull() ?: 1.1f,
+        lastN.toIntOrNull() ?: 64, seed.toLongOrNull() ?: 12345L, enableThinking
+      ))
+    }, enabled = loading || prompt.isNotBlank(), colors = if (loading) ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error) else ButtonDefaults.buttonColors(), modifier = Modifier.fillMaxWidth().testTag("run_generation_button")) {
       Text(if (loading) "Stop Generation" else "Run local inference")
     }
-    if (output.isNotBlank()) {
-      Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) {
-        Text(output, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall)
-      }
-    }
+    if (output.isNotBlank()) Surface(Modifier.fillMaxWidth(), shape = RoundedCornerShape(12.dp), color = MaterialTheme.colorScheme.surfaceVariant) { Text(output, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall) }
     HorizontalDivider(); Text("Coming Soon", fontWeight = FontWeight.Bold); Text("DRY · XTC · Dynamic Temperature · Mirostat · Frequency Penalty · Presence Penalty · Sampler Order", color = MaterialTheme.colorScheme.onSurfaceVariant)
   }
 }
 
-@Composable private fun LabeledInput(label: String, value: String, change: (String) -> Unit, minLines: Int = 1) = OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = minLines)
+@Composable
+private fun PersistentNumberInput(label: String, value: String, keyboardType: KeyboardType, onCommit: (String) -> Boolean) {
+  var text by remember(value) { mutableStateOf(value) }
+  var committed by remember(value) { mutableStateOf(value) }
+
+  fun commit() {
+    if (text == committed) return
+    if (onCommit(text)) {
+      committed = text
+    } else {
+      text = committed
+    }
+  }
+
+  OutlinedTextField(
+    value = text,
+    onValueChange = { text = it },
+    modifier = Modifier.fillMaxWidth().onFocusChanged { state -> if (!state.isFocused) commit() },
+    label = { Text(label) },
+    keyboardOptions = KeyboardOptions(keyboardType = keyboardType, imeAction = ImeAction.Done),
+    keyboardActions = KeyboardActions(onDone = { commit() })
+  )
+}
+
+@Composable
+private fun LabeledInput(label: String, value: String, change: (String) -> Unit, minLines: Int = 1) = OutlinedTextField(value, change, Modifier.fillMaxWidth(), label = { Text(label) }, minLines = minLines)
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable private fun ScreenHeader(title: String, back: () -> Unit) {
