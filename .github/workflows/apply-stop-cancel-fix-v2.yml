@@ -23,20 +23,21 @@ jobs:
         shell: python
         run: |
           from pathlib import Path
-          p = Path('app/src/main/cpp/native-lib.cpp')
+          p = Path("app/src/main/cpp/native-lib.cpp")
           s = p.read_text()
 
-          marker = 'std::string piece_for_token(const llama_vocab * vocab, llama_token token) {'
+          marker = "std::string piece_for_token(const llama_vocab * vocab, llama_token token) {"
           start = s.find(marker)
-          assert start >= 0
-          insert_at = s.find('\n}\n\n', start)
-          assert insert_at >= 0
+          assert start >= 0, "piece_for_token not found"
+          insert_at = s.find("}\n\n", start)
+          assert insert_at >= 0, "piece_for_token end not found"
           insert_at += 3
+
           helper = r'''
 
 // Convert standard UTF-8 to UTF-16 for JNI without using NewStringUTF().
-// NewStringUTF() expects Modified UTF-8 and can abort when a llama.cpp token
-// piece contains an incomplete or standard multi-byte UTF-8 sequence.
+// llama.cpp may emit token pieces that end in the middle of a multi-byte UTF-8
+// sequence, while NewStringUTF() expects Modified UTF-8 and may abort on such input.
 bool append_complete_utf8_to_utf16(const std::string & input, size_t & consumed, std::vector<jchar> & output) {
     consumed = 0;
     while (consumed < input.size()) {
@@ -99,36 +100,66 @@ jstring new_jstring_from_utf8(JNIEnv * env, const std::string & input) {
     std::vector<jchar> utf16;
     append_complete_utf8_to_utf16(input, consumed, utf16);
     if (consumed != input.size()) {
-        // The caller normally buffers incomplete token pieces. For complete
-        // strings, replace any malformed/incomplete trailing bytes safely.
         utf16.push_back(static_cast<jchar>(0xFFFD));
     }
     return env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));
 }
 '''
-          assert 'new_jstring_from_utf8(JNIEnv * env' not in s
+          assert "new_jstring_from_utf8(JNIEnv * env" not in s
           s = s[:insert_at] + helper + s[insert_at:]
 
           marker = 'extern "C" JNIEXPORT jstring JNICALL\nJava_com_example_MainActivity_nativeGenerateStream('
-          start = s.find(marker); assert start >= 0
+          start = s.find(marker)
+          assert start >= 0, "nativeGenerateStream not found"
           end = s.find('extern "C" JNIEXPORT void JNICALL\nJava_com_example_MainActivity_nativeCancelGeneration', start)
-          assert end >= 0
+          assert end >= 0, "nativeCancelGeneration boundary not found"
           part = s[start:end]
 
-          old = '''    std::string raw_text;\n    std::string status_or_err;'''
-          new = '''    std::string raw_text;\n    std::string status_or_err;\n    std::string pending_utf8;'''
+          old = "    std::string raw_text;\n    std::string status_or_err;"
+          new = "    std::string raw_text;\n    std::string status_or_err;\n    std::string pending_utf8;"
           assert old in part
           part = part.replace(old, new, 1)
 
-          old = '''                if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {\n                    jstring jpiece = env->NewStringUTF(std::string(piece, static_cast<size_t>(len)).c_str());\n                    if (jpiece != nullptr) {\n                        env->CallVoidMethod(token_callback, on_token_mid, jpiece);\n                        env->DeleteLocalRef(jpiece);\n                    }\n                }'''
-          new = '''                if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {\n                    pending_utf8.append(piece, static_cast<size_t>(len));\n                    size_t consumed = 0;\n                    std::vector<jchar> utf16;\n                    append_complete_utf8_to_utf16(pending_utf8, consumed, utf16);\n                    if (consumed > 0) {\n                        pending_utf8.erase(0, consumed);\n                        jstring jpiece = env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));\n                        if (jpiece != nullptr) {\n                            env->CallVoidMethod(token_callback, on_token_mid, jpiece);\n                            env->DeleteLocalRef(jpiece);\n                        }\n                    }\n                }'''
+          old = """                if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {
+                    jstring jpiece = env->NewStringUTF(std::string(piece, static_cast<size_t>(len)).c_str());
+                    if (jpiece != nullptr) {
+                        env->CallVoidMethod(token_callback, on_token_mid, jpiece);
+                        env->DeleteLocalRef(jpiece);
+                    }
+                }"""
+          new = """                if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {
+                    pending_utf8.append(piece, static_cast<size_t>(len));
+                    size_t consumed = 0;
+                    std::vector<jchar> utf16;
+                    append_complete_utf8_to_utf16(pending_utf8, consumed, utf16);
+                    if (consumed > 0) {
+                        pending_utf8.erase(0, consumed);
+                        jstring jpiece = env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));
+                        if (jpiece != nullptr) {
+                            env->CallVoidMethod(token_callback, on_token_mid, jpiece);
+                            env->DeleteLocalRef(jpiece);
+                        }
+                    }
+                }"""
           assert old in part
           part = part.replace(old, new, 1)
 
-          old = '''    env->ReleaseStringUTFChars(prompt, chars);\n    if (status_or_err.rfind("ERROR:", 0) == 0) {\n        return env->NewStringUTF(status_or_err.c_str());\n    }\n    return env->NewStringUTF(raw_text.c_str());'''
-          new = '''    env->ReleaseStringUTFChars(prompt, chars);\n    if (status_or_err.rfind("ERROR:", 0) == 0) {\n        return new_jstring_from_utf8(env, status_or_err);\n    }\n    if (!pending_utf8.empty()) {\n        // A cancelled generation may end immediately after a multi-byte token\n        // fragment. Do not pass that fragment through NewStringUTF().\n        raw_text.append(pending_utf8);\n    }\n    return new_jstring_from_utf8(env, raw_text);'''
+          old = """    env->ReleaseStringUTFChars(prompt, chars);
+    if (status_or_err.rfind(\"ERROR:\", 0) == 0) {
+        return env->NewStringUTF(status_or_err.c_str());
+    }
+    return env->NewStringUTF(raw_text.c_str());"""
+          new = """    env->ReleaseStringUTFChars(prompt, chars);
+    if (status_or_err.rfind(\"ERROR:\", 0) == 0) {
+        return new_jstring_from_utf8(env, status_or_err);
+    }
+    if (!pending_utf8.empty()) {
+        raw_text.append(pending_utf8);
+    }
+    return new_jstring_from_utf8(env, raw_text);"""
           assert old in part
           part = part.replace(old, new, 1)
+
           s = s[:start] + part + s[end:]
           p.write_text(s)
 
@@ -140,5 +171,6 @@ jstring new_jstring_from_utf8(JNIEnv * env, const std::string & input) {
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add app/src/main/cpp/native-lib.cpp
+          git diff --cached --quiet && exit 0
           git commit -m "fix: safely bridge UTF-8 token pieces to JNI"
           git push origin fix/stop-generation-cancel-separation
