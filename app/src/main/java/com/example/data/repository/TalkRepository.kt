@@ -63,6 +63,26 @@ class TalkRepository(private val context: Context) {
         prefs.edit().putFloat("default_top_p", value).apply()
     }
 
+    fun getDefaultMinP(): Float = prefs.getFloat("default_min_p", 0.0f)
+    fun setDefaultMinP(value: Float) {
+        prefs.edit().putFloat("default_min_p", value).apply()
+    }
+
+    fun getDefaultTypicalP(): Float = prefs.getFloat("default_typical_p", 1.0f)
+    fun setDefaultTypicalP(value: Float) {
+        prefs.edit().putFloat("default_typical_p", value).apply()
+    }
+
+    fun getDefaultRepetitionPenalty(): Float = prefs.getFloat("default_repetition_penalty", 1.1f)
+    fun setDefaultRepetitionPenalty(value: Float) {
+        prefs.edit().putFloat("default_repetition_penalty", value).apply()
+    }
+
+    fun getDefaultPenaltyLastN(): Int = prefs.getInt("default_penalty_last_n", 64)
+    fun setDefaultPenaltyLastN(value: Int) {
+        prefs.edit().putInt("default_penalty_last_n", value).apply()
+    }
+
     fun getDefaultContextSize(): Int = prefs.getInt("default_context_size", LlmDefaultSettings.CONTEXT_SIZE)
     fun setDefaultContextSize(value: Int) {
         prefs.edit().putInt("default_context_size", value).apply()
