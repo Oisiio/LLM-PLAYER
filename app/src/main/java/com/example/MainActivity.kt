@@ -89,6 +89,7 @@ class MainActivity : ComponentActivity() {
   private var defaultTopP by mutableFloatStateOf(0.9f)
   private var defaultContextSize by mutableIntStateOf(512)
   private var defaultMaxOutputTokens by mutableIntStateOf(128)
+  private var generationSeed by mutableStateOf("12345")
 
   private val talkViewModel by lazy {
     TalkViewModel(applicationContext, object : LlmStreamRunner {
@@ -170,6 +171,7 @@ class MainActivity : ComponentActivity() {
     defaultTopP = talkViewModel.repository.getDefaultTopP()
     defaultContextSize = talkViewModel.repository.getDefaultContextSize()
     defaultMaxOutputTokens = talkViewModel.repository.getDefaultMaxOutputTokens()
+    generationSeed = prefs.getString("generation_seed", "12345") ?: "12345"
     nativeSetThreads(cpuThreads, cpuThreadsBatch)
     nativeSetContextSize(defaultContextSize)
     nativeSetMaxOutputTokens(defaultMaxOutputTokens)
@@ -185,6 +187,7 @@ class MainActivity : ComponentActivity() {
           defaultTopP = defaultTopP,
           defaultContextSize = defaultContextSize,
           defaultMaxOutputTokens = defaultMaxOutputTokens,
+          generationSeed = generationSeed,
           onUpdateThreads = { threads, batchThreads ->
             cpuThreads = threads
             cpuThreadsBatch = batchThreads
@@ -215,6 +218,10 @@ class MainActivity : ComponentActivity() {
             defaultMaxOutputTokens = tokens
             talkViewModel.repository.setDefaultMaxOutputTokens(tokens)
             nativeSetMaxOutputTokens(tokens)
+          },
+          onUpdateGenerationSeed = { seed ->
+            generationSeed = seed
+            prefs.edit().putString("generation_seed", seed).apply()
           },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
@@ -265,12 +272,14 @@ private fun PlayerApp(
   defaultTemperature: Float, defaultTopK: Int, defaultTopP: Float,
   defaultContextSize: Int,
   defaultMaxOutputTokens: Int,
+  generationSeed: String,
   onUpdateThreads: (Int, Int) -> Unit,
   onUpdateDefaultTemperature: (Float) -> Unit,
   onUpdateDefaultTopK: (Int) -> Unit,
   onUpdateDefaultTopP: (Float) -> Unit,
   onUpdateDefaultContextSize: (Int) -> Unit,
   onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
+  onUpdateGenerationSeed: (String) -> Unit,
   onPickModel: () -> Unit, onUnload: () -> Unit,
   onCancelGenerate: () -> Unit,
   onGenerate: (SamplingSettings) -> Unit
@@ -302,6 +311,7 @@ private fun PlayerApp(
           AiPage.GENERATION -> GenerationScreen(
             output, loading,
             defaultTemperature, defaultTopK, defaultTopP,
+            generationSeed, onUpdateGenerationSeed,
             onCancelGenerate, onGenerate, { aiPage = AiPage.HOME }
           )
         }
@@ -512,6 +522,8 @@ private fun GenerationScreen(
   initialTemperature: Float,
   initialTopK: Int,
   initialTopP: Float,
+  seed: String,
+  onSeedChange: (String) -> Unit,
   onCancel: () -> Unit,
   onGenerate: (SamplingSettings) -> Unit,
   back: () -> Unit
@@ -524,7 +536,6 @@ private fun GenerationScreen(
   var typicalP by rememberSaveable { mutableStateOf("1.0") }
   var repeat by rememberSaveable { mutableStateOf("1.1") }
   var lastN by rememberSaveable { mutableStateOf("64") }
-  var seed by rememberSaveable { mutableStateOf("12345") }
   var enableThinking by rememberSaveable { mutableStateOf(false) }
   ScreenHeader("Generation", back)
   Column(Modifier.fillMaxSize().verticalScroll(rememberScrollState()).padding(horizontal = 20.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -546,7 +557,7 @@ private fun GenerationScreen(
       )
     }
     LabeledInput("Temperature", temperature, { temperature = it }); LabeledInput("Top-K", topK, { topK = it }); LabeledInput("Top-P", topP, { topP = it })
-    LabeledInput("Min-P", minP, { minP = it }); LabeledInput("Typical-P", typicalP, { typicalP = it }); LabeledInput("Repetition Penalty", repeat, { repeat = it }); LabeledInput("Penalty Last N", lastN, { lastN = it }); LabeledInput("Seed", seed, { seed = it })
+    LabeledInput("Min-P", minP, { minP = it }); LabeledInput("Typical-P", typicalP, { typicalP = it }); LabeledInput("Repetition Penalty", repeat, { repeat = it }); LabeledInput("Penalty Last N", lastN, { lastN = it }); LabeledInput("Seed", seed, onSeedChange)
     Button(
       onClick = {
         if (loading) {
