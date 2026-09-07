@@ -183,7 +183,11 @@ class TalkViewModel(
             title = "New Chat",
             temperature = repository.getDefaultTemperature(),
             topK = repository.getDefaultTopK(),
-            topP = repository.getDefaultTopP()
+            topP = repository.getDefaultTopP(),
+            minP = repository.getDefaultMinP(),
+            typicalP = repository.getDefaultTypicalP(),
+            repetitionPenalty = repository.getDefaultRepetitionPenalty(),
+            penaltyLastN = repository.getDefaultPenaltyLastN()
         )
         repository.saveChat(chat)
         // 初期の「最初の文章」があればメッセージとして投入
