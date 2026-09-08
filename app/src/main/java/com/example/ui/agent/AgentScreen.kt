@@ -19,8 +19,10 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.example.agent.AgentResult
 import com.example.agent.AgentRunner
+import com.example.agent.AgentState
 import com.example.agent.AgentStep
 import com.example.agent.ToolExecutionResult
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalLayoutApi::class)
@@ -32,7 +34,9 @@ fun AgentScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     var prompt by remember { mutableStateOf("12345 * 678 を計算してください") }
-    var isRunning by remember { mutableStateOf(false) }
+    val agentState by agentRunner.state.collectAsState()
+    val isRunning = agentState == AgentState.RUNNING
+    val isCancelling = agentState == AgentState.CANCELLING
     var steps by remember { mutableStateOf<List<AgentStep>>(emptyList()) }
     var resultText by remember { mutableStateOf<String?>(null) }
     var liveTokens by remember { mutableStateOf("") }
@@ -95,8 +99,9 @@ fun AgentScreen(
         ) {
             presets.forEach { preset ->
                 SuggestionChip(
-                    onClick = { prompt = preset },
-                    label = { Text(preset) }
+                    onClick = { if (agentState == AgentState.IDLE) prompt = preset },
+                    label = { Text(preset) },
+                    enabled = agentState == AgentState.IDLE
                 )
             }
         }
@@ -110,7 +115,7 @@ fun AgentScreen(
                 .testTag("agent_prompt_input"),
             label = { Text("プロンプト (計算や質問)") },
             minLines = 2,
-            enabled = !isRunning
+            enabled = agentState == AgentState.IDLE
         )
 
         // Action Buttons
@@ -120,8 +125,7 @@ fun AgentScreen(
         ) {
             Button(
                 onClick = {
-                    if (isRunning) return@Button
-                    isRunning = true
+                    if (agentState != AgentState.IDLE) return@Button
                     resultText = null
                     steps = emptyList()
                     liveTokens = ""
@@ -143,12 +147,12 @@ fun AgentScreen(
                                 is AgentResult.Cancelled -> runResult.message
                                 is AgentResult.Error -> runResult.errorMessage
                             }
-                        } finally {
-                            isRunning = false
+                        } catch (e: CancellationException) {
+                            resultText = "Agent stopped by user"
                         }
                     }
                 },
-                enabled = !isRunning && isModelLoaded && prompt.isNotBlank(),
+                enabled = agentState == AgentState.IDLE && isModelLoaded && prompt.isNotBlank(),
                 modifier = Modifier
                     .weight(1f)
                     .testTag("run_agent_button")
@@ -161,7 +165,6 @@ fun AgentScreen(
             OutlinedButton(
                 onClick = {
                     agentRunner.cancel()
-                    isRunning = false
                 },
                 enabled = isRunning,
                 colors = ButtonDefaults.outlinedButtonColors(
@@ -169,22 +172,32 @@ fun AgentScreen(
                 ),
                 modifier = Modifier.testTag("stop_agent_button")
             ) {
-                Icon(Icons.Filled.Stop, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Stop")
+                if (isCancelling) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(16.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.error
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Stopping...")
+                } else {
+                    Icon(Icons.Filled.Stop, contentDescription = null)
+                    Spacer(Modifier.width(4.dp))
+                    Text("Stop")
+                }
             }
         }
 
-        if (isRunning && liveTokens.isNotBlank()) {
+        if ((isRunning || isCancelling) && liveTokens.isNotBlank()) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Column(Modifier.padding(12.dp)) {
                     Text(
-                        text = "推論中...",
+                        text = if (isCancelling) "停止処理中..." else "推論中...",
                         style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.primary
+                        color = if (isCancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
                     )
                     Spacer(Modifier.height(4.dp))
                     Text(

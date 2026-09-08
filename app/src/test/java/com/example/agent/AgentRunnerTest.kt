@@ -296,4 +296,153 @@ class AgentRunnerTest {
         assertEquals(3, maxResult.steps.size)
         assertTrue(logs.contains("[Agent] stop"))
     }
+
+    @Test
+    fun test10_stateTransitionsAndStopLifecycle() = runBlocking {
+        lateinit var agent: AgentRunner
+        var stateDuringLlm: AgentState? = null
+        var stateAfterCancel: AgentState? = null
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                stateDuringLlm = agent.state.value
+                agent.cancel()
+                stateAfterCancel = agent.state.value
+                return "cancelled output"
+            }
+        }
+
+        agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        assertEquals(AgentState.IDLE, agent.state.value)
+        val result = agent.run("test")
+        assertTrue(result is AgentResult.Cancelled)
+        assertEquals(AgentState.RUNNING, stateDuringLlm)
+        assertEquals(AgentState.CANCELLING, stateAfterCancel)
+        assertEquals(AgentState.IDLE, agent.state.value)
+    }
+
+    @Test
+    fun test11_reExecutionAfterStop() = runBlocking {
+        lateinit var agent: AgentRunner
+        var runCount = 0
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                runCount++
+                return if (runCount == 1) {
+                    agent.cancel()
+                    "cancelled output"
+                } else {
+                    "2回目の回答です"
+                }
+            }
+        }
+
+        agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        // 1st run: stopped
+        val result1 = agent.run("1回目")
+        assertTrue(result1 is AgentResult.Cancelled)
+        assertEquals(AgentState.IDLE, agent.state.value)
+
+        // 2nd run: clean execution from IDLE
+        val result2 = agent.run("2回目")
+        assertTrue(result2 is AgentResult.Success)
+        assertEquals("2回目の回答です", (result2 as AgentResult.Success).finalAnswer)
+        assertEquals(AgentState.IDLE, agent.state.value)
+    }
+
+    @Test
+    fun test12_stopSpammingIsIdempotent() = runBlocking {
+        lateinit var agent: AgentRunner
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                // Spam cancel 5 times
+                repeat(5) {
+                    agent.cancel()
+                }
+                return "cancelled output"
+            }
+        }
+
+        agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run("spam cancel test")
+        assertTrue(result is AgentResult.Cancelled)
+        assertEquals(AgentState.IDLE, agent.state.value)
+
+        // Calling cancel when already IDLE is also harmless
+        repeat(3) {
+            agent.cancel()
+        }
+        assertEquals(AgentState.IDLE, agent.state.value)
+    }
+
+    @Test
+    fun test13_preventDoubleRun() = runBlocking {
+        lateinit var agent: AgentRunner
+        var secondRunResult: AgentResult? = null
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                // Try to start a second run while the first is running
+                secondRunResult = agent.run("同時実行テスト")
+                return "最初の回答です"
+            }
+        }
+
+        agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result1 = agent.run("1回目")
+        assertTrue("result1 expected Success but was: $result1", result1 is AgentResult.Success)
+        assertTrue("secondRunResult expected Error but was: $secondRunResult", secondRunResult is AgentResult.Error)
+        assertTrue((secondRunResult as AgentResult.Error).errorMessage.contains("already running", ignoreCase = true))
+        assertEquals(AgentState.IDLE, agent.state.value)
+    }
 }

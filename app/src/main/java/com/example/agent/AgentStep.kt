@@ -1,5 +1,11 @@
 package com.example.agent
 
+enum class AgentState {
+    IDLE,
+    RUNNING,
+    CANCELLING
+}
+
 data class AgentStep(
     val stepNumber: Int,
     val prompt: String,
