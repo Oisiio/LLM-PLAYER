@@ -1,6 +1,7 @@
 package com.example.agent
 
 import com.example.agent.tools.CalculatorTool
+import com.example.agent.tools.DateTimeTool
 import com.example.ui.talk.LlmStreamRunner
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
@@ -29,7 +30,7 @@ data class AgentSamplingConfig(
 
 class AgentRunner(
     private val llmRunner: LlmStreamRunner,
-    val toolRegistry: ToolRegistry = ToolRegistry(listOf(CalculatorTool())),
+    val toolRegistry: ToolRegistry = ToolRegistry(listOf(CalculatorTool(), DateTimeTool())),
     private val logger: AgentLogger = AgentLogger.Default
 ) {
     companion object {
@@ -173,6 +174,7 @@ class AgentRunner(
                     // Tool call detected
                     logger.log("[Agent] tool=${toolCall.toolName}")
                     val expr = toolCall.arguments["expression"]
+                        ?: toolCall.arguments["action"]
                         ?: toolCall.arguments.values.firstOrNull()
                         ?: ""
                     logger.log("[Agent] expression=$expr")

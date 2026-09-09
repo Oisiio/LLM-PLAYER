@@ -1,6 +1,7 @@
 package com.example.agent
 
 import com.example.agent.tools.CalculatorTool
+import com.example.agent.tools.DateTimeTool
 import com.example.ui.talk.LlmStreamRunner
 import com.example.ui.talk.TalkDebugMetrics
 import kotlinx.coroutines.runBlocking
@@ -444,5 +445,91 @@ class AgentRunnerTest {
         assertTrue("secondRunResult expected Error but was: $secondRunResult", secondRunResult is AgentResult.Error)
         assertTrue((secondRunResult as AgentResult.Error).errorMessage.contains("already running", ignoreCase = true))
         assertEquals(AgentState.IDLE, agent.state.value)
+    }
+
+    @Test
+    fun test14_toolChaining_dateTimeAndCalculator() = runBlocking {
+        // Simulates:
+        // User: "今日(2026-09-08)からクリスマス(2026-12-25)までの日数を計算して、1日500円貯金したらいくら？"
+        // Step 1: LLM calls datetime diff_days -> returns 108
+        // Step 2: LLM calls calculator 108 * 500 -> returns 54000
+        // Step 3: LLM provides Final Answer: "合計54000円になります"
+        var callCount = 0
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                callCount++
+                return when (callCount) {
+                    1 -> {
+                        // Check that both tools are presented in prompt
+                        assertTrue(prompt.contains("datetime"))
+                        assertTrue(prompt.contains("calculator"))
+                        """
+                        思考: まず今日からクリスマスまでの日数を計算します。
+                        <tool_call>
+                        {"name": "datetime", "arguments": {"action": "diff_days", "from": "2026-09-08", "to": "2026-12-25"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    2 -> {
+                        // Check that step 1 tool result (108) is presented in prompt
+                        assertTrue(prompt.contains("108"))
+                        """
+                        思考: 日数は108日です。次に 108 * 500 を計算します。
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": "108 * 500"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    3 -> {
+                        // Check that step 2 tool result (54000) is presented in prompt
+                        assertTrue(prompt.contains("54000"))
+                        "今日からクリスマスまでは108日です。1日500円貯金すると合計54,000円になります。"
+                    }
+                    else -> "予期しない呼び出しです"
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool(), DateTimeTool()))
+        )
+
+        val result = agent.run("今日からクリスマスまでの日数を計算して、1日500円貯金したらいくらになる？")
+
+        assertTrue("Expected Success but got: $result", result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals(3, success.steps.size)
+        assertEquals("datetime", success.steps[0].toolCall?.toolName)
+        assertEquals("108", success.steps[0].toolResult?.text)
+        assertEquals("calculator", success.steps[1].toolCall?.toolName)
+        assertEquals("54000", success.steps[1].toolResult?.text)
+        assertTrue(success.steps[2].isFinal)
+        assertTrue(success.finalAnswer.contains("54,000"))
+        assertEquals(AgentState.IDLE, agent.state.value)
+    }
+
+    @Test
+    fun testToolCallParser_dateTimeJsonFormat() {
+        val output = """
+            <tool_call>
+            {"name": "datetime", "arguments": {"action": "diff_days", "from": "2026-09-08", "to": "2026-12-25"}}
+            </tool_call>
+        """.trimIndent()
+
+        val call = ToolCallParser.parse(output)
+        assertNotNull(call)
+        assertEquals("datetime", call!!.toolName)
+        assertEquals("diff_days", call.arguments["action"])
+        assertEquals("2026-09-08", call.arguments["from"])
+        assertEquals("2026-12-25", call.arguments["to"])
     }
 }

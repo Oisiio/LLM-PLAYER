@@ -45,8 +45,10 @@ object ToolCallParser {
 
     private fun tryParseJson(content: String, rawCallText: String): ToolCall? {
         // Simple, resilient key-value / JSON extractor without Android-specific or third-party dependencies
-        // Handles {"name": "calculator", "arguments": {"expression": "..."}}
-        // Handles {"tool": "calculator", "expression": "..."}
+        // Handles:
+        // {"name": "calculator", "arguments": {"expression": "..."}}
+        // {"name": "datetime", "arguments": {"action": "diff_days", "from": "...", "to": "..."}}
+        // {"tool": "datetime", "action": "today"}
         if (!content.contains("{") || !content.contains("}")) return null
 
         val name = extractStringProperty(content, "name")
@@ -54,41 +56,51 @@ object ToolCallParser {
             ?: extractFirstWordBeforeJson(content)
             ?: return null
 
+        val toolNameLower = name.lowercase().trim()
         val args = mutableMapOf<String, String>()
 
-        // Look for expression directly
-        val directExpression = extractStringProperty(content, "expression")
-            ?: extractStringProperty(content, "expr")
-            ?: extractStringProperty(content, "input")
+        // 1. Check if there is an "arguments" nested object
+        val argsBlock = extractJsonObject(content, "arguments")
+        val targetJson = argsBlock ?: content
 
-        if (directExpression != null) {
-            args["expression"] = directExpression
-        } else {
-            // Check inside "arguments": { ... }
-            val argsBlock = extractJsonObject(content, "arguments")
-            if (argsBlock != null) {
-                val expr = extractStringProperty(argsBlock, "expression")
-                    ?: extractStringProperty(argsBlock, "expr")
-                    ?: extractStringProperty(argsBlock, "input")
-                if (expr != null) {
-                    args["expression"] = expr
-                }
-            }
-        }
+        // Extract key-value pairs from targetJson
+        extractAllKeyValues(targetJson, args, excludeKeys = setOf("name", "tool", "arguments"))
 
-        if (args.isEmpty()) {
-            // If tool is calculator and no key matched, look for any string value
-            val firstVal = extractAnyStringValue(content)
-            if (firstVal != null && firstVal != name) {
-                args["expression"] = firstVal
+        // Legacy / Fallback for calculator if expression wasn't populated
+        if (toolNameLower == "calculator" && !args.containsKey("expression")) {
+            val expr = extractStringProperty(content, "expression")
+                ?: extractStringProperty(content, "expr")
+                ?: extractStringProperty(content, "input")
+                ?: extractAnyStringValue(content)?.takeIf { it != name }
+            if (expr != null) {
+                args["expression"] = expr
             }
         }
 
         return ToolCall(
-            toolName = name.lowercase().trim(),
+            toolName = toolNameLower,
             arguments = args,
             rawCallText = rawCallText
         )
+    }
+
+    private fun extractAllKeyValues(json: String, outMap: MutableMap<String, String>, excludeKeys: Set<String>) {
+        // Matches "key"\s*:\s*"value" or "key"\s*:\s*(\d+|true|false|-?\d+)
+        val pairRegex = Regex("\"([a-zA-Z0-9_]+)\"\\s*:\\s*(?:\"([^\"]*)\"|'([^']*)'|(-?\\d+(?:\\.\\d+)?)|(true|false))")
+        for (match in pairRegex.findAll(json)) {
+            val key = match.groupValues[1].lowercase()
+            if (key in excludeKeys) continue
+            val stringVal = match.groupValues[2].ifEmpty {
+                match.groupValues[3].ifEmpty {
+                    match.groupValues[4].ifEmpty {
+                        match.groupValues[5]
+                    }
+                }
+            }
+            if (stringVal.isNotEmpty() || match.groupValues[2].isNotEmpty()) {
+                outMap[key] = stringVal
+            }
+        }
     }
 
     private fun tryParseTextFormat(content: String, rawCallText: String): ToolCall? {

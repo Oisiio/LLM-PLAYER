@@ -7,6 +7,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Calculate
+import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -42,12 +43,13 @@ fun AgentScreen(
     var liveTokens by remember { mutableStateOf("") }
 
     val presets = listOf(
-        "123 + 456",
-        "10 + 5 * 2",
-        "(10 + 5) * 2",
-        "12.5 * 2",
+        "12345 * 678 を計算して",
+        "今日は何日ですか？",
+        "今何時？",
+        "2026-12-25 は何曜日？",
+        "今日からクリスマス（2026-12-25）まで何日？",
+        "今日からクリスマスまでの日数を計算して、1日500円貯金したらいくらになる？",
         "100 / 4",
-        "10 / 0",
         "こんにちは"
     )
 
@@ -66,12 +68,12 @@ fun AgentScreen(
         ) {
             Column {
                 Text(
-                    text = "Agent (Phase 1)",
+                    text = "Agent",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.Bold
                 )
                 Text(
-                    text = "Calculator Tool 最小検証環境",
+                    text = "Calculator & DateTime Tool 検証環境",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
@@ -247,7 +249,11 @@ fun AgentScreen(
                                         modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
                                         verticalAlignment = Alignment.CenterVertically
                                     ) {
-                                        Icon(Icons.Filled.Calculate, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        val icon = when (step.toolCall.toolName.lowercase()) {
+                                            "datetime" -> Icons.Filled.CalendarToday
+                                            else -> Icons.Filled.Calculate
+                                        }
+                                        Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp))
                                         Spacer(Modifier.width(4.dp))
                                         Text(
                                             text = step.toolCall.toolName,
