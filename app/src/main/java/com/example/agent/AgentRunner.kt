@@ -73,6 +73,8 @@ class AgentRunner(
         userPrompt: String,
         samplingConfig: AgentSamplingConfig = AgentSamplingConfig(),
         maxSteps: Int = DEFAULT_MAX_STEPS,
+        systemPrompt: String = AgentPromptBuilder.DEFAULT_SYSTEM_PROMPT,
+        enableThinking: Boolean = true,
         onStepUpdate: ((AgentStep) -> Unit)? = null,
         onToken: ((String) -> Unit)? = null
     ): AgentResult {
@@ -110,7 +112,8 @@ class AgentRunner(
                     val prompt = AgentPromptBuilder.buildStepPrompt(
                         userMessage = userPrompt,
                         tools = toolRegistry.getAllTools(),
-                        previousSteps = steps
+                        previousSteps = steps,
+                        systemPrompt = systemPrompt
                     )
 
                     // 2. Cooperative check before LLM generation
@@ -131,7 +134,7 @@ class AgentRunner(
                         repetitionPenalty = samplingConfig.repetitionPenalty,
                         penaltyLastN = samplingConfig.penaltyLastN,
                         seed = samplingConfig.seed,
-                        enableThinking = false,
+                        enableThinking = enableThinking,
                         onToken = { token ->
                             if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
                                 textAccumulator.append(token)

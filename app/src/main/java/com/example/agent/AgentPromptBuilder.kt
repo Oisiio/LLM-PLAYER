@@ -2,16 +2,29 @@ package com.example.agent
 
 object AgentPromptBuilder {
 
+    const val DEFAULT_SYSTEM_PROMPT = """あなたはLLM-PLAYERのAgentです。
+
+必要に応じて利用可能なToolを使用してユーザーの質問に回答してください。
+
+正確な計算が必要な場合はcalculatorを使用してください。
+現在の日付・時刻・曜日が必要な場合はdatetimeを使用してください。
+
+複数のToolが必要な場合は、必要なToolを順番に使用してください。
+Toolの実行結果を推測や暗算で置き換えないでください。
+
+必要なToolの処理がすべて完了してから、最終回答を生成してください。"""
+
     fun buildStepPrompt(
         userMessage: String,
         tools: List<Tool>,
-        previousSteps: List<AgentStep>
+        previousSteps: List<AgentStep>,
+        systemPrompt: String = DEFAULT_SYSTEM_PROMPT
     ): String {
         val sb = StringBuilder()
 
         // 1. System instructions
         sb.append("[指示]\n")
-        sb.append("あなたは役立つアシスタントです。必要に応じて提供されたツールを呼び出してユーザーの質問に回答してください。\n\n")
+        sb.append(systemPrompt.trim()).append("\n\n")
 
         sb.append("利用可能なツール一覧:\n")
         for (tool in tools) {

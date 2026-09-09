@@ -532,4 +532,190 @@ class AgentRunnerTest {
         assertEquals("2026-09-08", call.arguments["from"])
         assertEquals("2026-12-25", call.arguments["to"])
     }
+
+    @Test
+    fun test15_agentSettings_defaultSystemPrompt_usedWhenNotSpecified() = runBlocking {
+        var receivedPrompt = ""
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                receivedPrompt = prompt
+                return "こんにちは！"
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool(), DateTimeTool()))
+        )
+
+        val result = agent.run("こんにちは")
+        assertTrue(result is AgentResult.Success)
+        assertTrue(receivedPrompt.contains("あなたはLLM-PLAYERのAgentです。"))
+        assertTrue(receivedPrompt.contains("必要に応じて利用可能なToolを使用してユーザーの質問に回答してください。"))
+    }
+
+    @Test
+    fun test16_agentSettings_customSystemPrompt_passedToLlm() = runBlocking {
+        var receivedPrompt = ""
+        val customPrompt = "カスタム指示: 必ず関西弁で回答し、計算はすべて確認すること。"
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                receivedPrompt = prompt
+                return "まいど！"
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run(
+            userPrompt = "こんにちは",
+            systemPrompt = customPrompt
+        )
+        assertTrue(result is AgentResult.Success)
+        assertTrue(receivedPrompt.contains(customPrompt))
+        assertFalse(receivedPrompt.contains("あなたはLLM-PLAYERのAgentです。"))
+    }
+
+    @Test
+    fun test17_agentSettings_enableThinkingTrue_passedToLlmRunner() = runBlocking {
+        var receivedThinking: Boolean? = null
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                receivedThinking = enableThinking
+                return "Thinkingテスト完了"
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run(
+            userPrompt = "テスト",
+            enableThinking = true
+        )
+        assertTrue(result is AgentResult.Success)
+        assertEquals(true, receivedThinking)
+    }
+
+    @Test
+    fun test18_agentSettings_enableThinkingFalse_passedToLlmRunner_andToolsWorkNormally() = runBlocking {
+        var receivedThinking: Boolean? = null
+        var callCount = 0
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                receivedThinking = enableThinking
+                callCount++
+                return if (callCount == 1) {
+                    """
+                    <tool_call>
+                    {"name": "calculator", "arguments": {"expression": "20 + 30"}}
+                    </tool_call>
+                    """.trimIndent()
+                } else {
+                    "計算結果は50です。"
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run(
+            userPrompt = "20 + 30 を計算して",
+            enableThinking = false
+        )
+        assertTrue(result is AgentResult.Success)
+        assertEquals(false, receivedThinking)
+        val success = result as AgentResult.Success
+        assertEquals(2, success.steps.size)
+        assertEquals("calculator", success.steps[0].toolCall?.toolName)
+        assertEquals("50", success.steps[0].toolResult?.text)
+        assertEquals("計算結果は50です。", success.finalAnswer)
+    }
+
+    @Test
+    fun test19_agentPromptBuilder_structurePreservedWithCustomPrompt() {
+        val customPrompt = "カスタムシステム指示です。"
+        val tools = listOf(CalculatorTool(), DateTimeTool())
+        val previousSteps = listOf(
+            AgentStep(
+                stepNumber = 1,
+                prompt = "step 1 prompt",
+                rawLlmOutput = "<tool_call>{\"name\": \"calculator\", \"arguments\": {\"expression\": \"10 + 20\"}}</tool_call>",
+                toolCall = ToolCall(toolName = "calculator", arguments = mapOf("expression" to "10 + 20"), rawCallText = "<tool_call>...</tool_call>"),
+                toolResult = ToolExecutionResult.Success("30"),
+                isFinal = false
+            )
+        )
+
+        val prompt = AgentPromptBuilder.buildStepPrompt(
+            userMessage = "計算して",
+            tools = tools,
+            previousSteps = previousSteps,
+            systemPrompt = customPrompt
+        )
+
+        val idxInstructions = prompt.indexOf("[指示]")
+        val idxCustomPrompt = prompt.indexOf(customPrompt)
+        val idxTools = prompt.indexOf("利用可能なツール一覧:")
+        val idxFormat = prompt.indexOf("ツールを呼び出す場合は、以下の形式のみを出力してください:")
+        val idxInput = prompt.indexOf("[ユーザーの入力]")
+        val idxSteps = prompt.indexOf("[これまでのステップ]")
+        val idxAnswer = prompt.indexOf("[アシスタントの回答]")
+
+        assertTrue(idxInstructions != -1)
+        assertTrue(idxCustomPrompt != -1)
+        assertTrue(idxTools != -1)
+        assertTrue(idxFormat != -1)
+        assertTrue(idxInput != -1)
+        assertTrue(idxSteps != -1)
+        assertTrue(idxAnswer != -1)
+
+        // Verify order: [指示] -> customPrompt -> ツール一覧 -> 形式 -> [ユーザーの入力] -> [これまでのステップ] -> [アシスタントの回答]
+        assertTrue(idxInstructions < idxCustomPrompt)
+        assertTrue(idxCustomPrompt < idxTools)
+        assertTrue(idxTools < idxFormat)
+        assertTrue(idxFormat < idxInput)
+        assertTrue(idxInput < idxSteps)
+        assertTrue(idxSteps < idxAnswer)
+    }
 }

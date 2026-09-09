@@ -9,15 +9,21 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Psychology
+import androidx.compose.material.icons.filled.PsychologyAlt
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.agent.AgentPreferences
 import com.example.agent.AgentResult
 import com.example.agent.AgentRunner
 import com.example.agent.AgentState
@@ -33,6 +39,12 @@ fun AgentScreen(
     isModelLoaded: Boolean,
     modifier: Modifier = Modifier
 ) {
+    val context = LocalContext.current
+    val agentPreferences = remember { AgentPreferences(context) }
+    var systemPrompt by remember { mutableStateOf(agentPreferences.systemPrompt) }
+    var isThinkingEnabled by remember { mutableStateOf(agentPreferences.isThinkingEnabled) }
+    var showSettingsDialog by remember { mutableStateOf(false) }
+
     val coroutineScope = rememberCoroutineScope()
     var prompt by remember { mutableStateOf("12345 * 678 を計算してください") }
     val agentState by agentRunner.state.collectAsState()
@@ -66,7 +78,7 @@ fun AgentScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column {
+            Column(modifier = Modifier.weight(1f)) {
                 Text(
                     text = "Agent",
                     style = MaterialTheme.typography.titleLarge,
@@ -78,12 +90,54 @@ fun AgentScreen(
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
-            AssistChip(
-                onClick = {},
-                label = { Text(if (isModelLoaded) "Model Loaded" else "No Model") },
-                colors = AssistChipDefaults.assistChipColors(
-                    labelColor = if (isModelLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(4.dp)
+            ) {
+                AssistChip(
+                    onClick = {},
+                    label = { Text(if (isModelLoaded) "Model Loaded" else "No Model") },
+                    colors = AssistChipDefaults.assistChipColors(
+                        labelColor = if (isModelLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
+                    )
                 )
+                IconButton(
+                    onClick = { showSettingsDialog = true },
+                    modifier = Modifier.testTag("agent_settings_button")
+                ) {
+                    Icon(
+                        Icons.Filled.Settings,
+                        contentDescription = "Agent設定"
+                    )
+                }
+            }
+        }
+
+        // Settings Status Chips
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            AssistChip(
+                onClick = { showSettingsDialog = true },
+                label = { Text("Thinking: ${if (isThinkingEnabled) "ON" else "OFF"}") },
+                leadingIcon = {
+                    Icon(
+                        if (isThinkingEnabled) Icons.Filled.Psychology else Icons.Filled.PsychologyAlt,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp)
+                    )
+                },
+                modifier = Modifier.testTag("agent_thinking_status_chip")
+            )
+            AssistChip(
+                onClick = { showSettingsDialog = true },
+                label = { Text("Agent設定") },
+                leadingIcon = {
+                    Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
+                },
+                modifier = Modifier.testTag("agent_settings_chip")
             )
         }
 
@@ -135,6 +189,8 @@ fun AgentScreen(
                         try {
                             val runResult = agentRunner.run(
                                 userPrompt = prompt,
+                                systemPrompt = systemPrompt,
+                                enableThinking = isThinkingEnabled,
                                 onStepUpdate = { newStep ->
                                     steps = steps + newStep
                                     liveTokens = ""
@@ -316,5 +372,19 @@ fun AgentScreen(
                 }
             }
         }
+    }
+
+    if (showSettingsDialog) {
+        AgentSettingsDialog(
+            initialSystemPrompt = systemPrompt,
+            initialThinkingEnabled = isThinkingEnabled,
+            onDismiss = { showSettingsDialog = false },
+            onSave = { newPrompt, newThinking ->
+                agentPreferences.systemPrompt = newPrompt
+                agentPreferences.isThinkingEnabled = newThinking
+                systemPrompt = newPrompt
+                isThinkingEnabled = newThinking
+            }
+        )
     }
 }
