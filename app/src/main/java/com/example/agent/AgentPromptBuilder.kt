@@ -60,12 +60,12 @@ Toolの実行結果を推測や暗算で置き換えないでください。
                         when (result) {
                             is ToolExecutionResult.Success -> {
                                 sb.append("<tool_result>\n")
-                                sb.append("{\"tool\": \"").append(step.toolCall.toolName).append("\", \"result\": \"").append(result.output).append("\"}\n")
+                                sb.append(buildToolResultJson(step.toolCall.toolName, result.output, null)).append("\n")
                                 sb.append("</tool_result>\n")
                             }
                             is ToolExecutionResult.Error -> {
                                 sb.append("<tool_result>\n")
-                                sb.append("{\"tool\": \"").append(step.toolCall.toolName).append("\", \"error\": \"").append(result.errorMessage).append("\"}\n")
+                                sb.append(buildToolResultJson(step.toolCall.toolName, null, result.errorMessage)).append("\n")
                                 sb.append("</tool_result>\n")
                             }
                         }
@@ -77,5 +77,43 @@ Toolの実行結果を推測や暗算で置き換えないでください。
 
         sb.append("[アシスタントの回答]\n")
         return sb.toString()
+    }
+
+    /**
+     * Escapes a string to be safely embedded inside a JSON string literal according to RFC 8259.
+     */
+    fun escapeJsonString(value: String): String {
+        val sb = StringBuilder(value.length + 16)
+        for (c in value) {
+            when (c) {
+                '\\' -> sb.append("\\\\")
+                '"' -> sb.append("\\\"")
+                '\n' -> sb.append("\\n")
+                '\r' -> sb.append("\\r")
+                '\t' -> sb.append("\\t")
+                '\b' -> sb.append("\\b")
+                '\u000C' -> sb.append("\\f")
+                else -> {
+                    if (c.code < 0x20) {
+                        sb.append(String.format("\\u%04x", c.code))
+                    } else {
+                        sb.append(c)
+                    }
+                }
+            }
+        }
+        return sb.toString()
+    }
+
+    /**
+     * Builds a safe JSON string representing a tool result for prompt history.
+     */
+    fun buildToolResultJson(toolName: String, output: String?, errorMessage: String?): String {
+        val escapedTool = escapeJsonString(toolName)
+        return if (errorMessage != null) {
+            "{\"tool\": \"$escapedTool\", \"error\": \"${escapeJsonString(errorMessage)}\"}"
+        } else {
+            "{\"tool\": \"$escapedTool\", \"result\": \"${escapeJsonString(output ?: "")}\"}"
+        }
     }
 }
