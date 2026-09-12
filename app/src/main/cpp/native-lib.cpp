@@ -16,6 +16,8 @@
 
 #include "llama.h"
 #include "chat.h"
+#include "reasoning-budget.h"
+#include "unicode.h"
 
 namespace {
 constexpr char kLogTag[] = "LLM-PLAYER";
@@ -54,7 +56,9 @@ bool format_chat_prompt(const std::string & user_prompt,
                         std::string & formatted_prompt,
                         std::string & template_name,
                         std::vector<std::string> & additional_stops,
-                        bool enable_thinking = false) {
+                        bool enable_thinking = false,
+                        std::string * out_thinking_start_tag = nullptr,
+                        std::vector<std::string> * out_thinking_end_tags = nullptr) {
     if (g_model == nullptr) return false;
 
     if (!g_chat_templates) {
@@ -83,6 +87,12 @@ bool format_chat_prompt(const std::string & user_prompt,
         const auto chat_params = common_chat_templates_apply(g_chat_templates.get(), inputs);
         formatted_prompt = chat_params.prompt;
         additional_stops = chat_params.additional_stops;
+        if (out_thinking_start_tag != nullptr) {
+            *out_thinking_start_tag = chat_params.thinking_start_tag;
+        }
+        if (out_thinking_end_tags != nullptr) {
+            *out_thinking_end_tags = chat_params.thinking_end_tags;
+        }
         template_name = (raw_tmpl != nullptr && raw_tmpl[0] != '\0') ? raw_tmpl : "MODEL_CHAT_TEMPLATE";
         return !formatted_prompt.empty();
     } catch (const std::exception & e) {
@@ -363,6 +373,7 @@ std::string generate_sampling_locked(
     int32_t penalty_last_n = kPenaltyLastN,
     int64_t seed = kSeed,
     bool enable_thinking = false,
+    int32_t thinking_budget = 0,
     const std::function<void(const char*, int32_t)> & on_token = nullptr,
     std::string * out_raw_text = nullptr,
     const std::function<void(double)> & on_ttft = nullptr,
@@ -376,15 +387,19 @@ std::string generate_sampling_locked(
     std::string formatted_prompt;
     std::string chat_template;
     std::vector<std::string> additional_stops;
-    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops, enable_thinking)) return "ERROR: chat_template_apply failed";
+    std::string thinking_start_tag;
+    std::vector<std::string> thinking_end_tags;
+    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops, enable_thinking, &thinking_start_tag, &thinking_end_tags)) return "ERROR: chat_template_apply failed";
     if (!std::isfinite(min_p)) min_p = 0.0f;
     min_p = std::max(0.0f, std::min(1.0f, min_p));
     if (!std::isfinite(typical_p)) typical_p = 1.0f;
     typical_p = std::max(0.0f, std::min(1.0f, typical_p));
     if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) repetition_penalty = 1.0f;
+
     std::vector<llama_token> tokens;
     if (!tokenize_prompt(formatted_prompt, tokens)) return "ERROR: llama_tokenize failed";
     if (tokens.empty() || static_cast<int32_t>(tokens.size()) > g_n_ctx) return "ERROR: invalid token count";
+
     llama_memory_clear(llama_get_memory(g_context), true);
     const auto t_prompt_start = std::chrono::steady_clock::now();
     for (size_t offset = 0; offset < tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
@@ -398,17 +413,70 @@ std::string generate_sampling_locked(
     }
     const auto t_prompt_end = std::chrono::steady_clock::now();
     const double prompt_processing_time_ms = std::chrono::duration<double, std::milli>(t_prompt_end - t_prompt_start).count();
+
     const llama_vocab * vocab = llama_model_get_vocab(g_model);
     if (vocab == nullptr) return "ERROR: vocab is unavailable";
     const int32_t vocab_size = llama_vocab_n_tokens(vocab);
     if (vocab_size <= 0) return "ERROR: invalid vocabulary size";
+
+    struct SamplerDeleter {
+        void operator()(struct llama_sampler * s) const {
+            if (s != nullptr) llama_sampler_free(s);
+        }
+    };
+    std::unique_ptr<struct llama_sampler, SamplerDeleter> rbudget_guard;
+
+    if (enable_thinking && thinking_budget > 0) {
+        std::string start_str = !thinking_start_tag.empty() ? thinking_start_tag : "<think>";
+        std::vector<std::string> end_strs = !thinking_end_tags.empty() ? thinking_end_tags : std::vector<std::string>{"</think>"};
+
+        std::vector<llama_token> start_tokens;
+        tokenize_prompt(start_str, start_tokens);
+
+        std::vector<std::vector<llama_token>> end_seqs;
+        for (const auto & et : end_strs) {
+            std::vector<llama_token> et_tokens;
+            if (tokenize_prompt(et, et_tokens) && !et_tokens.empty()) {
+                end_seqs.push_back(et_tokens);
+            }
+        }
+        std::vector<llama_token> forced_tokens;
+        if (!end_seqs.empty()) {
+            forced_tokens = end_seqs.front();
+        } else {
+            tokenize_prompt("</think>", forced_tokens);
+            if (!forced_tokens.empty()) {
+                end_seqs.push_back(forced_tokens);
+            }
+        }
+
+        if (!start_tokens.empty() && !end_seqs.empty()) {
+            struct llama_sampler * rbudget = common_reasoning_budget_init(
+                vocab,
+                {start_tokens},
+                end_seqs,
+                forced_tokens,
+                thinking_budget,
+                REASONING_BUDGET_IDLE
+            );
+            if (rbudget != nullptr) {
+                for (const auto & pt : tokens) {
+                    llama_sampler_accept(rbudget, pt);
+                }
+                rbudget_guard.reset(rbudget);
+            }
+        }
+    }
+
     const int32_t max_gen_tokens = g_max_gen_tokens > 0 ? g_max_gen_tokens : 128;
     const int32_t max_context_tokens = g_n_ctx;
     constexpr const char * kStopSequence = "<END>";
     const std::string stop_report = stop_tokenization_report(vocab, kStopSequence);
+
     std::mt19937 rng;
     std::string seed_str;
     if (seed >= 0) { rng.seed(static_cast<uint32_t>(seed)); seed_str = std::to_string(seed); } else { std::random_device rd; rng.seed(rd()); seed_str = "RANDOM"; }
+
     std::string generated_text;
     int32_t generated_count = 0;
     std::vector<llama_token> generated_tokens;
@@ -416,11 +484,14 @@ std::string generate_sampling_locked(
     bool first_token_determined = false;
     std::chrono::steady_clock::time_point t_first_token;
     std::string stop_reason = "MAX_TOKENS";
+
     for (int32_t i = 0; i < max_gen_tokens; ++i) {
         if (cancel_flag != nullptr && cancel_flag->load()) { stop_reason = "USER_CANCEL"; break; }
         if (static_cast<int32_t>(tokens.size()) + generated_count >= max_context_tokens) { stop_reason = "MAX_CONTEXT"; break; }
+
         const float * logits = llama_get_logits(g_context);
         if (logits == nullptr) return "ERROR: logits are unavailable";
+
         std::vector<float> penalized_logits;
         const float * effective_logits = logits;
         if (repetition_penalty > 1.0f && std::isfinite(repetition_penalty) && !generated_tokens.empty()) {
@@ -428,6 +499,21 @@ std::string generate_sampling_locked(
             apply_repetition_penalty(penalized_logits, vocab, generated_tokens, repetition_penalty, penalty_last_n);
             effective_logits = penalized_logits.data();
         }
+
+        if (rbudget_guard && common_reasoning_budget_get_state(rbudget_guard.get()) == REASONING_BUDGET_FORCING) {
+            std::vector<llama_token_data> cur(static_cast<size_t>(vocab_size));
+            for (int32_t token_id = 0; token_id < vocab_size; ++token_id) {
+                cur[static_cast<size_t>(token_id)] = { static_cast<llama_token>(token_id), effective_logits[token_id], 0.0f };
+            }
+            llama_token_data_array cur_p = { cur.data(), cur.size(), -1, false };
+            llama_sampler_apply(rbudget_guard.get(), &cur_p);
+            penalized_logits.resize(static_cast<size_t>(vocab_size));
+            for (size_t k = 0; k < cur.size(); ++k) {
+                penalized_logits[static_cast<size_t>(cur[k].id)] = cur[k].logit;
+            }
+            effective_logits = penalized_logits.data();
+        }
+
         const llama_token current_token = sample_with_sampling_filters(effective_logits, vocab_size, temperature, top_k, top_p, min_p, typical_p, rng);
         if (!first_token_determined) {
             t_first_token = std::chrono::steady_clock::now();
@@ -437,7 +523,9 @@ std::string generate_sampling_locked(
                 on_ttft(current_ttft_ms);
             }
         }
+
         if (llama_vocab_is_eog(vocab, current_token)) { stop_reason = "EOG"; break; }
+
         char token_text[256] = {};
         const int32_t token_length = llama_token_to_piece(vocab, current_token, token_text, static_cast<int32_t>(sizeof(token_text)), 0, true);
         if (token_length < 0) return "ERROR: llama_token_to_piece failed";
@@ -449,8 +537,13 @@ std::string generate_sampling_locked(
         }
         generated_count++;
         generated_tokens.push_back(current_token);
+        if (rbudget_guard) {
+            llama_sampler_accept(rbudget_guard.get(), current_token);
+        }
+
         const size_t stop_pos = generated_text.find(kStopSequence);
         if (stop_pos != std::string::npos) { generated_text.erase(stop_pos); stop_reason = "STOP_SEQUENCE"; break; }
+
         bool stopped_by_additional = false;
         for (const auto & add_stop : additional_stops) {
             if (add_stop.empty()) continue;
@@ -463,8 +556,10 @@ std::string generate_sampling_locked(
             }
         }
         if (stopped_by_additional) break;
+
         if (generated_count >= max_gen_tokens) { stop_reason = "MAX_TOKENS"; break; }
         if (cancel_flag != nullptr && cancel_flag->load()) { stop_reason = "USER_CANCEL"; break; }
+
         llama_token next_token = current_token;
         llama_batch token_batch = llama_batch_get_one(&next_token, 1);
         if (llama_decode(g_context, token_batch) != 0) return "ERROR: llama_decode failed";
@@ -643,7 +738,8 @@ extern "C" JNIEXPORT jboolean JNICALL
 Java_com_example_MainActivity_nativeSetContextSize(
         JNIEnv* /* env */, jobject /* this */, jint n_ctx) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
-    if (n_ctx != 512 && n_ctx != 1024 && n_ctx != 2048 && n_ctx != 4096) {
+    if (n_ctx != 512 && n_ctx != 1024 && n_ctx != 2048 && n_ctx != 4096 &&
+        n_ctx != 8192 && n_ctx != 16384 && n_ctx != 24576 && n_ctx != 32768) {
         __android_log_print(ANDROID_LOG_WARN, kLogTag, "nativeSetContextSize: invalid n_ctx=%d", n_ctx);
         return JNI_FALSE;
     }
@@ -722,7 +818,7 @@ Java_com_example_MainActivity_nativeGenerateWithSampling(
         std::lock_guard<std::mutex> lock(g_model_mutex);
         g_cancel_ai_generation.store(false);
         if (g_model == nullptr || g_context == nullptr) return std::string("ERROR: model is not loaded");
-        return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed, enable_thinking == JNI_TRUE, nullptr, nullptr, nullptr, nullptr, &g_cancel_ai_generation);
+        return generate_sampling_locked(chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed, enable_thinking == JNI_TRUE, 0, nullptr, nullptr, nullptr, nullptr, &g_cancel_ai_generation);
     }();
     env->ReleaseStringUTFChars(prompt, chars);
     return new_jstring_from_utf8(env, result);
@@ -732,7 +828,7 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_com_example_MainActivity_nativeGenerateStream(
         JNIEnv * env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p,
         jfloat min_p, jfloat typical_p, jfloat repetition_penalty, jint penalty_last_n, jlong seed,
-        jboolean enable_thinking, jobject token_callback) {
+        jboolean enable_thinking, jint thinking_budget, jobject token_callback) {
     if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
     const char * chars = env->GetStringUTFChars(prompt, nullptr);
     if (chars == nullptr) return env->NewStringUTF("ERROR: prompt unavailable");
@@ -759,7 +855,7 @@ Java_com_example_MainActivity_nativeGenerateStream(
         }
         status_or_err = generate_sampling_locked(
             chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed,
-            enable_thinking == JNI_TRUE,
+            enable_thinking == JNI_TRUE, static_cast<int32_t>(thinking_budget),
             [&](const char * piece, int32_t len) {
                 if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {
                     pending_utf8.append(piece, static_cast<size_t>(len));

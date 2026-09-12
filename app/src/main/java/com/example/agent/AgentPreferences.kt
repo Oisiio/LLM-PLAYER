@@ -23,6 +23,12 @@ class AgentPreferences(
             prefs.edit().putBoolean(KEY_THINKING_ENABLED, value).apply()
         }
 
+    var thinkingBudget: Int
+        get() = prefs.getInt(KEY_THINKING_BUDGET, DEFAULT_THINKING_BUDGET)
+        set(value) {
+            prefs.edit().putInt(KEY_THINKING_BUDGET, value).apply()
+        }
+
     fun resetSystemPrompt(): String {
         val defaultVal = AgentPromptBuilder.DEFAULT_SYSTEM_PROMPT
         systemPrompt = defaultVal
@@ -32,5 +38,7 @@ class AgentPreferences(
     companion object {
         const val KEY_SYSTEM_PROMPT = "agent_system_prompt"
         const val KEY_THINKING_ENABLED = "agent_thinking_enabled"
+        const val KEY_THINKING_BUDGET = "agent_thinking_budget"
+        const val DEFAULT_THINKING_BUDGET = 1024
     }
 }

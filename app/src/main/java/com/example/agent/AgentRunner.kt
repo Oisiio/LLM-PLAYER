@@ -75,6 +75,7 @@ class AgentRunner(
         maxSteps: Int = DEFAULT_MAX_STEPS,
         systemPrompt: String = AgentPromptBuilder.DEFAULT_SYSTEM_PROMPT,
         enableThinking: Boolean = true,
+        thinkingBudget: Int = 1024,
         onStepUpdate: ((AgentStep) -> Unit)? = null,
         onToken: ((String) -> Unit)? = null
     ): AgentResult {
@@ -135,6 +136,7 @@ class AgentRunner(
                         penaltyLastN = samplingConfig.penaltyLastN,
                         seed = samplingConfig.seed,
                         enableThinking = enableThinking,
+                        thinkingBudget = thinkingBudget,
                         onToken = { token ->
                             if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
                                 textAccumulator.append(token)

@@ -18,11 +18,13 @@ import com.example.agent.AgentPromptBuilder
 fun AgentSettingsDialog(
     initialSystemPrompt: String,
     initialThinkingEnabled: Boolean,
+    initialThinkingBudget: Int,
     onDismiss: () -> Unit,
-    onSave: (systemPrompt: String, thinkingEnabled: Boolean) -> Unit
+    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int) -> Unit
 ) {
     var systemPrompt by remember { mutableStateOf(initialSystemPrompt) }
     var thinkingEnabled by remember { mutableStateOf(initialThinkingEnabled) }
+    var thinkingBudget by remember { mutableIntStateOf(initialThinkingBudget) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -113,12 +115,58 @@ fun AgentSettingsDialog(
                         modifier = Modifier.testTag("agent_settings_thinking_switch")
                     )
                 }
+
+                if (thinkingEnabled) {
+                    HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                    // Thinking Token Budget Section
+                    Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Thinking Token Budget",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = "$thinkingBudget tokens",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+                        Text(
+                            text = "1回の推論における思考(<think>)の上限です。超過時は強制終了してTool呼び出しまたは回答へ移行します（各Stepで毎回リセットされます）。",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        val budgetOptions = listOf(256, 512, 1024, 2048, 4096)
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            budgetOptions.forEach { budget ->
+                                FilterChip(
+                                    selected = thinkingBudget == budget,
+                                    onClick = { thinkingBudget = budget },
+                                    label = { Text("$budget", style = MaterialTheme.typography.labelSmall) },
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .testTag("agent_settings_budget_${budget}")
+                                )
+                            }
+                        }
+                    }
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(systemPrompt, thinkingEnabled)
+                    onSave(systemPrompt, thinkingEnabled, thinkingBudget)
                     onDismiss()
                 },
                 modifier = Modifier.testTag("agent_settings_save_button")

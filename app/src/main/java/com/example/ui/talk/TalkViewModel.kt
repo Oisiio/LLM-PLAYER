@@ -46,6 +46,37 @@ interface LlmStreamRunner {
         onTtft: ((Double) -> Unit)? = null,
         onMetrics: ((TalkDebugMetrics) -> Unit)? = null
     ): String
+
+    suspend fun runStreamingInference(
+        prompt: String,
+        temperature: Float,
+        topK: Int,
+        topP: Float,
+        minP: Float,
+        typicalP: Float,
+        repetitionPenalty: Float,
+        penaltyLastN: Int,
+        seed: Long,
+        enableThinking: Boolean,
+        thinkingBudget: Int,
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)? = null,
+        onMetrics: ((TalkDebugMetrics) -> Unit)? = null
+    ): String = runStreamingInference(
+        prompt = prompt,
+        temperature = temperature,
+        topK = topK,
+        topP = topP,
+        minP = minP,
+        typicalP = typicalP,
+        repetitionPenalty = repetitionPenalty,
+        penaltyLastN = penaltyLastN,
+        seed = seed,
+        enableThinking = enableThinking,
+        onToken = onToken,
+        onTtft = onTtft,
+        onMetrics = onMetrics
+    )
 }
 
 class TalkViewModel(

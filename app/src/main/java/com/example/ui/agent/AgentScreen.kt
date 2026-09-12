@@ -43,6 +43,7 @@ fun AgentScreen(
     val agentPreferences = remember { AgentPreferences(context) }
     var systemPrompt by remember { mutableStateOf(agentPreferences.systemPrompt) }
     var isThinkingEnabled by remember { mutableStateOf(agentPreferences.isThinkingEnabled) }
+    var thinkingBudget by remember { mutableIntStateOf(agentPreferences.thinkingBudget) }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
@@ -121,7 +122,7 @@ fun AgentScreen(
         ) {
             AssistChip(
                 onClick = { showSettingsDialog = true },
-                label = { Text("Thinking: ${if (isThinkingEnabled) "ON" else "OFF"}") },
+                label = { Text("Thinking: ${if (isThinkingEnabled) "ON (${thinkingBudget})" else "OFF"}") },
                 leadingIcon = {
                     Icon(
                         if (isThinkingEnabled) Icons.Filled.Psychology else Icons.Filled.PsychologyAlt,
@@ -191,6 +192,7 @@ fun AgentScreen(
                                 userPrompt = prompt,
                                 systemPrompt = systemPrompt,
                                 enableThinking = isThinkingEnabled,
+                                thinkingBudget = thinkingBudget,
                                 onStepUpdate = { newStep ->
                                     steps = steps + newStep
                                     liveTokens = ""
@@ -378,12 +380,15 @@ fun AgentScreen(
         AgentSettingsDialog(
             initialSystemPrompt = systemPrompt,
             initialThinkingEnabled = isThinkingEnabled,
+            initialThinkingBudget = thinkingBudget,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newPrompt, newThinking ->
+            onSave = { newPrompt, newThinking, newBudget ->
                 agentPreferences.systemPrompt = newPrompt
                 agentPreferences.isThinkingEnabled = newThinking
+                agentPreferences.thinkingBudget = newBudget
                 systemPrompt = newPrompt
                 isThinkingEnabled = newThinking
+                thinkingBudget = newBudget
             }
         )
     }

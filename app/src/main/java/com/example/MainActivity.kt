@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
   private external fun nativeGenerateStream(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
-    enableThinking: Boolean, callback: NativeTokenCallback
+    enableThinking: Boolean, thinkingBudget: Int, callback: NativeTokenCallback
   ): String
 
   private var modelStatus by mutableStateOf("No model loaded")
@@ -112,11 +112,21 @@ class MainActivity : ComponentActivity() {
         typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
         enableThinking: Boolean, onToken: (String) -> Unit,
         onTtft: ((Double) -> Unit)?, onMetrics: ((TalkDebugMetrics) -> Unit)?
+      ): String = runStreamingInference(
+        prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
+        penaltyLastN, seed, enableThinking, 0, onToken, onTtft, onMetrics
+      )
+
+      override suspend fun runStreamingInference(
+        prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
+        typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+        enableThinking: Boolean, thinkingBudget: Int, onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)?, onMetrics: ((TalkDebugMetrics) -> Unit)?
       ): String = withContext(Dispatchers.Default) {
         if (!nativeIsModelLoaded()) return@withContext "ERROR: Model not loaded."
         nativeGenerateStream(
           prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
-          penaltyLastN, seed, enableThinking,
+          penaltyLastN, seed, enableThinking, thinkingBudget,
           object : NativeTokenCallback {
             override fun onToken(token: String) { onToken(token) }
             override fun onTtft(ttftMs: Double) { onTtft?.invoke(ttftMs) }
@@ -323,8 +333,17 @@ private fun AiHome(
         Text("$defaultContextSize tokens", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
       }
       Text("会話で一度に扱えるトークン数です。大きくすると長いプロンプトを扱えます。", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+      val ctxRow1 = listOf(512 to "512", 1024 to "1K", 2048 to "2K", 4096 to "4K")
+      val ctxRow2 = listOf(8192 to "8K", 16384 to "16K", 24576 to "24K", 32768 to "32K")
       Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        listOf(512, 1024, 2048, 4096).forEach { size -> FilterChip(selected = defaultContextSize == size, onClick = { onUpdateDefaultContextSize(size) }, label = { Text("$size") }, modifier = Modifier.weight(1f)) }
+        ctxRow1.forEach { (size, label) ->
+          FilterChip(selected = defaultContextSize == size, onClick = { onUpdateDefaultContextSize(size) }, label = { Text(label) }, modifier = Modifier.weight(1f))
+        }
+      }
+      Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        ctxRow2.forEach { (size, label) ->
+          FilterChip(selected = defaultContextSize == size, onClick = { onUpdateDefaultContextSize(size) }, label = { Text(label) }, modifier = Modifier.weight(1f))
+        }
       }
     } }
     Card(Modifier.fillMaxWidth()) { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
