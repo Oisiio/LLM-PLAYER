@@ -12,21 +12,23 @@ import androidx.compose.ui.platform.LocalContext
 
 private val DarkColorScheme =
   darkColorScheme(
-    primary = SleekDarkPrimary,
-    onPrimary = SleekDarkOnPrimary,
-    primaryContainer = SleekDarkPrimaryContainer,
-    onPrimaryContainer = SleekDarkOnPrimaryContainer,
-    secondary = SleekSecondary,
-    onSecondary = SleekOnSecondary,
-    secondaryContainer = SleekDarkSurfaceVariant,
-    onSecondaryContainer = SleekDarkOnSurfaceVariant,
-    background = SleekDarkBackground,
-    onBackground = SleekDarkOnBackground,
-    surface = SleekDarkSurface,
-    onSurface = SleekDarkOnSurface,
-    surfaceVariant = SleekDarkSurfaceVariant,
-    onSurfaceVariant = SleekDarkOnSurfaceVariant,
-    outline = SleekDarkOutline
+    primary = LlmPrimary,
+    onPrimary = LlmTextPrimary,
+    primaryContainer = LlmPrimaryContainer,
+    onPrimaryContainer = LlmPrimaryLight,
+    secondary = LlmPrimaryLight,
+    onSecondary = LlmBackground,
+    secondaryContainer = LlmContainerHigh,
+    onSecondaryContainer = LlmTextPrimary,
+    background = LlmBackground,
+    onBackground = LlmTextPrimary,
+    surface = LlmSurface,
+    onSurface = LlmTextPrimary,
+    surfaceVariant = LlmContainer,
+    onSurfaceVariant = LlmTextSecondary,
+    outline = LlmBorder,
+    outlineVariant = LlmBorderSubtle,
+    error = LlmError
   )
 
 private val LightColorScheme =
@@ -50,9 +52,9 @@ private val LightColorScheme =
 
 @Composable
 fun MyApplicationTheme(
-  darkTheme: Boolean = isSystemInDarkTheme(),
+  darkTheme: Boolean = true,
   // Dynamic color is available on Android 12+
-  dynamicColor: Boolean = true,
+  dynamicColor: Boolean = false,
   content: @Composable () -> Unit,
 ) {
   val colorScheme =

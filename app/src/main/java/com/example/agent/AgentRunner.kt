@@ -43,6 +43,13 @@ class AgentRunner(
     private val isCancelRequested = AtomicBoolean(false)
     private val hasLoggedStop = AtomicBoolean(false)
 
+    fun configureTools(calculatorEnabled: Boolean, dateTimeEnabled: Boolean) {
+        val list = mutableListOf<Tool>()
+        if (calculatorEnabled) list.add(CalculatorTool())
+        if (dateTimeEnabled) list.add(DateTimeTool())
+        toolRegistry.setTools(list)
+    }
+
     @Volatile
     var currentJob: Job? = null
         private set

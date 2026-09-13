@@ -8,6 +8,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
 import androidx.compose.material.icons.filled.PsychologyAlt
@@ -37,6 +38,7 @@ import kotlinx.coroutines.launch
 fun AgentScreen(
     agentRunner: AgentRunner,
     isModelLoaded: Boolean,
+    onOpenDrawer: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
@@ -79,17 +81,34 @@ fun AgentScreen(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = "Agent",
-                    style = MaterialTheme.typography.titleLarge,
-                    fontWeight = FontWeight.Bold
-                )
-                Text(
-                    text = "Calculator & DateTime Tool 検証環境",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                if (onOpenDrawer != null) {
+                    IconButton(
+                        onClick = onOpenDrawer,
+                        modifier = Modifier.size(40.dp).testTag("agent_drawer_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = "Menu"
+                        )
+                    }
+                }
+                Column {
+                    Text(
+                        text = "Agent",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Text(
+                        text = "Calculator & DateTime Tool 検証環境",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -188,8 +207,13 @@ fun AgentScreen(
                     liveTokens = ""
                     coroutineScope.launch {
                         try {
+                            agentRunner.configureTools(
+                                agentPreferences.isCalculatorEnabled,
+                                agentPreferences.isDateTimeEnabled
+                            )
                             val runResult = agentRunner.run(
                                 userPrompt = prompt,
+                                maxSteps = agentPreferences.maxSteps,
                                 systemPrompt = systemPrompt,
                                 enableThinking = isThinkingEnabled,
                                 thinkingBudget = thinkingBudget,

@@ -93,6 +93,19 @@ class TalkRepository(private val context: Context) {
         prefs.edit().putInt("default_max_output_tokens", value).apply()
     }
 
+    fun resetToDefaults() {
+        setDefaultTemperature(LlmDefaultSettings.TEMPERATURE)
+        setDefaultTopK(LlmDefaultSettings.TOP_K)
+        setDefaultTopP(LlmDefaultSettings.TOP_P)
+        setDefaultMinP(0.0f)
+        setDefaultTypicalP(1.0f)
+        setDefaultRepetitionPenalty(1.1f)
+        setDefaultPenaltyLastN(64)
+        setDefaultContextSize(LlmDefaultSettings.CONTEXT_SIZE)
+        setDefaultMaxOutputTokens(LlmDefaultSettings.MAX_OUTPUT_TOKENS)
+        setViewMode(CharacterViewMode.LIST)
+    }
+
     fun refreshCharacters() {
         val list = dbHelper.getAllCharacters()
         _characters.value = list

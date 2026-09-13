@@ -38,7 +38,8 @@ fun CharacterListScreen(
     onImportCharacter: () -> Unit,
     onEditCharacter: (Character) -> Unit,
     onToggleFavorite: (Character) -> Unit,
-    onDeleteCharacter: (Character) -> Unit
+    onDeleteCharacter: (Character) -> Unit,
+    onOpenDrawer: (() -> Unit)? = null
 ) {
     var searchQuery by remember { mutableStateOf("") }
     var isSearchActive by remember { mutableStateOf(false) }
@@ -102,6 +103,13 @@ fun CharacterListScreen(
     Scaffold(
         topBar = {
             TopAppBar(
+                navigationIcon = {
+                    if (onOpenDrawer != null) {
+                        IconButton(onClick = onOpenDrawer, modifier = Modifier.testTag("talk_drawer_button")) {
+                            Icon(Icons.Default.Menu, contentDescription = "Menu")
+                        }
+                    }
+                },
                 title = {
                     if (isSearchActive) {
                         OutlinedTextField(

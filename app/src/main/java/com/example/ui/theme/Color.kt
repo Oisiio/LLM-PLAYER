@@ -33,3 +33,24 @@ val SleekDarkOnSurface = Color(0xFFE2E2E6)
 val SleekDarkSurfaceVariant = Color(0xFF2B313A)
 val SleekDarkOnSurfaceVariant = Color(0xFFC3C7CF)
 val SleekDarkOutline = Color(0xFF3F484E)
+
+// LLM-PLAYER Unified Design System Colors
+val LlmBackground = Color(0xFF111317)
+val LlmSurface = Color(0xFF16181D)
+val LlmContainer = Color(0xFF1A1C20)
+val LlmContainerHigh = Color(0xFF22252B)
+val LlmBorder = Color(0xFF282A2E)
+val LlmBorderSubtle = Color(0xFF24272F)
+
+val LlmPrimary = Color(0xFF8083FF)
+val LlmPrimaryLight = Color(0xFFC0C1FF)
+val LlmPrimaryContainer = Color(0x228083FF) // rgba(128,131,255,0.13)
+
+val LlmTextPrimary = Color(0xFFF3F4F6)
+val LlmTextSecondary = Color(0xFF9CA3AF)
+val LlmTextTertiary = Color(0xFF6B7280)
+
+val LlmSuccess = Color(0xFF4EDEA3)
+val LlmError = Color(0xFFFFB4AB)
+val LlmWarningAmber = Color(0xFFFBBF24)
+val LlmWarningAmberDark = Color(0xFFF59E0B)

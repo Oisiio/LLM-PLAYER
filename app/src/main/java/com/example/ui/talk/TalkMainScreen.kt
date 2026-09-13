@@ -10,6 +10,7 @@ import com.example.data.model.Character
 @Composable
 fun TalkMainScreen(
     viewModel: TalkViewModel,
+    onOpenDrawer: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val navDestination by viewModel.navDestination.collectAsState()
@@ -50,7 +51,8 @@ fun TalkMainScreen(
                     onImportCharacter = { showImportDialog = true },
                     onEditCharacter = { viewModel.openEditCharacter(it) },
                     onToggleFavorite = { viewModel.toggleFavorite(it) },
-                    onDeleteCharacter = { viewModel.deleteCharacter(it) }
+                    onDeleteCharacter = { viewModel.deleteCharacter(it) },
+                    onOpenDrawer = onOpenDrawer
                 )
             }
 
