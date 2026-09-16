@@ -75,7 +75,7 @@ fun InferenceSettingsScreen(
         24576 to "24K",
         32768 to "32K"
     )
-    val disabledContextSizes = setOf(24576, 32768)
+    val disabledContextSizes = emptySet<Int>()
 
     val maxTokensOptions = listOf(
         128 to "128",

@@ -26,14 +26,15 @@ import com.example.ui.theme.*
 fun PerformanceSettingsScreen(
     currentCpuThreads: Int,
     currentCpuThreadsBatch: Int,
+    currentKvCacheType: String = "Auto",
     onOpenDrawer: () -> Unit,
     onBack: () -> Unit,
-    onApply: (cpuThreads: Int, cpuThreadsBatch: Int) -> Unit,
+    onApply: (cpuThreads: Int, cpuThreadsBatch: Int, kvCacheType: String) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var cpuThreads by remember { mutableIntStateOf(currentCpuThreads) }
-    var cpuThreadsBatch by remember { mutableIntStateOf(currentCpuThreadsBatch) }
-    var kvCacheType by remember { mutableStateOf("Auto") }
+    var cpuThreads by remember(currentCpuThreads) { mutableIntStateOf(currentCpuThreads) }
+    var cpuThreadsBatch by remember(currentCpuThreadsBatch) { mutableIntStateOf(currentCpuThreadsBatch) }
+    var kvCacheType by remember(currentKvCacheType) { mutableStateOf(currentKvCacheType) }
     var memoryOptimization by remember { mutableStateOf(true) }
     var backend by remember { mutableStateOf("Auto") }
     var threadAffinity by remember { mutableStateOf("Auto") }
@@ -67,7 +68,7 @@ fun PerformanceSettingsScreen(
             LlmApplyBottomBar(
                 text = "✓ 変更を適用",
                 onClick = {
-                    onApply(cpuThreads, cpuThreadsBatch)
+                    onApply(cpuThreads, cpuThreadsBatch, kvCacheType)
                     showSavedSnackbar = true
                 }
             )
@@ -135,7 +136,7 @@ fun PerformanceSettingsScreen(
                             color = LlmTextPrimary
                         )
                         Text(
-                            text = "Auto",
+                            text = kvCacheType,
                             style = MaterialTheme.typography.labelSmall,
                             color = LlmPrimaryLight,
                             fontFamily = FontFamily.Monospace
@@ -152,7 +153,7 @@ fun PerformanceSettingsScreen(
                         options = listOf("Auto" to "Auto", "Q8_0" to "Q8_0", "Q4_0" to "Q4_0"),
                         selected = kvCacheType,
                         onSelect = { kvCacheType = it },
-                        disabledValues = setOf("Q8_0", "Q4_0"), // Q8_0 and Q4_0 disabled as per llama.cpp current JNI
+                        disabledValues = emptySet<String>(),
                         columns = 3
                     )
                 }

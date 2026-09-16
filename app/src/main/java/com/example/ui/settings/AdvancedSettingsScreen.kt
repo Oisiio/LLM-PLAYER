@@ -28,15 +28,18 @@ fun AdvancedSettingsScreen(
     contextSize: Int,
     maxOutputTokens: Int,
     modelStatus: String,
+    initialDebugLogging: Boolean = false,
+    initialLogLevel: String = "Normal",
+    initialExperimentalFeatures: Boolean = false,
     onOpenDrawer: () -> Unit,
     onBack: () -> Unit,
     onResetAllSettings: () -> Unit,
     onApply: (debugLogging: Boolean, logLevel: String, experimental: Boolean) -> Unit,
     modifier: Modifier = Modifier
 ) {
-    var debugLogging by remember { mutableStateOf(false) }
-    var logLevel by remember { mutableStateOf("Normal") }
-    var experimentalFeatures by remember { mutableStateOf(false) }
+    var debugLogging by remember(initialDebugLogging) { mutableStateOf(initialDebugLogging) }
+    var logLevel by remember(initialLogLevel) { mutableStateOf(initialLogLevel) }
+    var experimentalFeatures by remember(initialExperimentalFeatures) { mutableStateOf(initialExperimentalFeatures) }
 
     var showResetDialog by remember { mutableStateOf(false) }
     var showSavedSnackbar by remember { mutableStateOf(false) }
@@ -71,6 +74,9 @@ fun AdvancedSettingsScreen(
                 Button(
                     onClick = {
                         showResetDialog = false
+                        debugLogging = false
+                        logLevel = "Normal"
+                        experimentalFeatures = false
                         onResetAllSettings()
                     },
                     colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),

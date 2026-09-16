@@ -93,6 +93,26 @@ class TalkRepository(private val context: Context) {
         prefs.edit().putInt("default_max_output_tokens", value).apply()
     }
 
+    fun isDebugLoggingEnabled(): Boolean = prefs.getBoolean("debug_logging", false)
+    fun setDebugLoggingEnabled(value: Boolean) {
+        prefs.edit().putBoolean("debug_logging", value).apply()
+    }
+
+    fun getLogLevel(): String = prefs.getString("log_level", "Normal") ?: "Normal"
+    fun setLogLevel(value: String) {
+        prefs.edit().putString("log_level", value).apply()
+    }
+
+    fun isExperimentalFeaturesEnabled(): Boolean = prefs.getBoolean("experimental_features", false)
+    fun setExperimentalFeaturesEnabled(value: Boolean) {
+        prefs.edit().putBoolean("experimental_features", value).apply()
+    }
+
+    fun getKvCacheType(): String = prefs.getString("kv_cache_type", "Auto") ?: "Auto"
+    fun setKvCacheType(value: String) {
+        prefs.edit().putString("kv_cache_type", value).apply()
+    }
+
     fun resetToDefaults() {
         setDefaultTemperature(LlmDefaultSettings.TEMPERATURE)
         setDefaultTopK(LlmDefaultSettings.TOP_K)
@@ -103,7 +123,11 @@ class TalkRepository(private val context: Context) {
         setDefaultPenaltyLastN(64)
         setDefaultContextSize(LlmDefaultSettings.CONTEXT_SIZE)
         setDefaultMaxOutputTokens(LlmDefaultSettings.MAX_OUTPUT_TOKENS)
+        setKvCacheType("Auto")
         setViewMode(CharacterViewMode.LIST)
+        setDebugLoggingEnabled(false)
+        setLogLevel("Normal")
+        setExperimentalFeaturesEnabled(false)
     }
 
     fun refreshCharacters() {

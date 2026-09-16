@@ -45,6 +45,25 @@ std::mutex g_model_mutex;
 llama_model * g_model = nullptr;
 llama_context * g_context = nullptr;
 common_chat_templates_ptr g_chat_templates;
+std::string g_kv_cache_type = "Auto";
+
+llama_context_params create_context_params_locked(int32_t n_ctx, const std::string & kv_type) {
+    llama_context_params context_params = llama_context_default_params();
+    context_params.n_ctx = n_ctx;
+    context_params.n_batch = kBatchSize;
+    context_params.n_threads = g_n_threads;
+    context_params.n_threads_batch = g_n_threads_batch;
+
+    if (kv_type == "Q8_0") {
+        context_params.type_k = GGML_TYPE_Q8_0;
+        context_params.type_v = GGML_TYPE_Q8_0;
+    } else if (kv_type == "Q4_0") {
+        context_params.type_k = GGML_TYPE_Q4_0;
+        context_params.type_v = GGML_TYPE_Q4_0;
+    }
+    // "Auto": uses llama_context_default_params() default (F16)
+    return context_params;
+}
 
 void unload_model_locked() {
     g_chat_templates.reset();
@@ -618,11 +637,7 @@ extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_nativeLoadMod
     model_params.load_mode = LLAMA_LOAD_MODE_MMAP;
     g_model = llama_model_load_from_file(path, model_params);
     if (g_model == nullptr) { env->ReleaseStringUTFChars(model_path, path); return env->NewStringUTF("ERROR: llama_model_load_from_file failed"); }
-    llama_context_params context_params = llama_context_default_params();
-    context_params.n_ctx = g_n_ctx;
-    context_params.n_batch = kBatchSize;
-    context_params.n_threads = g_n_threads;
-    context_params.n_threads_batch = g_n_threads_batch;
+    llama_context_params context_params = create_context_params_locked(g_n_ctx, g_kv_cache_type);
     g_context = llama_init_from_model(g_model, context_params);
     env->ReleaseStringUTFChars(model_path, path);
     if (g_context == nullptr) { llama_model_free(g_model); g_model = nullptr; return env->NewStringUTF("ERROR: model loaded, but llama_init_from_model failed"); }
@@ -748,11 +763,7 @@ Java_com_example_MainActivity_nativeSetContextSize(
 
     // If a model is currently loaded, re-initialize g_context safely
     if (g_model != nullptr) {
-        llama_context_params context_params = llama_context_default_params();
-        context_params.n_ctx = target_ctx;
-        context_params.n_batch = kBatchSize;
-        context_params.n_threads = g_n_threads;
-        context_params.n_threads_batch = g_n_threads_batch;
+        llama_context_params context_params = create_context_params_locked(target_ctx, g_kv_cache_type);
 
         llama_context * new_context = llama_init_from_model(g_model, context_params);
         if (new_context == nullptr) {
@@ -776,6 +787,58 @@ Java_com_example_MainActivity_nativeGetContextSize(
         JNIEnv* /* env */, jobject /* this */) {
     std::lock_guard<std::mutex> lock(g_model_mutex);
     return static_cast<jint>(g_n_ctx);
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_example_MainActivity_nativeSetKvCacheType(
+        JNIEnv* env, jobject /* this */, jstring kv_type) {
+    if (kv_type == nullptr) {
+        return JNI_FALSE;
+    }
+    const char * kv_type_chars = env->GetStringUTFChars(kv_type, nullptr);
+    if (kv_type_chars == nullptr) {
+        return JNI_FALSE;
+    }
+    const std::string target_type(kv_type_chars);
+    env->ReleaseStringUTFChars(kv_type, kv_type_chars);
+
+    // Validation: Only accept "Auto", "Q8_0", "Q4_0"
+    if (target_type != "Auto" && target_type != "Q8_0" && target_type != "Q4_0") {
+        __android_log_print(ANDROID_LOG_WARN, kLogTag, "nativeSetKvCacheType: invalid kv_type=%s", target_type.c_str());
+        return JNI_FALSE;
+    }
+
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    if (target_type == g_kv_cache_type && g_context != nullptr) {
+        return JNI_TRUE;
+    }
+
+    // If a model is currently loaded, re-initialize g_context safely
+    if (g_model != nullptr) {
+        llama_context_params context_params = create_context_params_locked(g_n_ctx, target_type);
+
+        llama_context * new_context = llama_init_from_model(g_model, context_params);
+        if (new_context == nullptr) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "nativeSetKvCacheType: llama_init_from_model failed for kv_type=%s", target_type.c_str());
+            return JNI_FALSE;
+        }
+
+        if (g_context != nullptr) {
+            llama_free(g_context);
+        }
+        g_context = new_context;
+        g_kv_cache_type = target_type;
+    } else {
+        g_kv_cache_type = target_type;
+    }
+    return JNI_TRUE;
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_MainActivity_nativeGetKvCacheType(
+        JNIEnv* env, jobject /* this */) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    return env->NewStringUTF(g_kv_cache_type.c_str());
 }
 
 extern "C" JNIEXPORT jboolean JNICALL

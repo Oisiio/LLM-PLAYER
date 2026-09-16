@@ -31,6 +31,7 @@ import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
+import com.example.agent.AgentLogger
 import com.example.agent.AgentPreferences
 import com.example.agent.AgentRunner
 import com.example.ui.agent.AgentScreen
@@ -75,6 +76,8 @@ class MainActivity : ComponentActivity() {
   private external fun nativeSetThreads(nThreads: Int, nThreadsBatch: Int)
   private external fun nativeSetContextSize(nCtx: Int): Boolean
   private external fun nativeGetContextSize(): Int
+  private external fun nativeSetKvCacheType(kvCacheType: String): Boolean
+  private external fun nativeGetKvCacheType(): String
   private external fun nativeSetMaxOutputTokens(maxOutputTokens: Int): Boolean
   private external fun nativeGetMaxOutputTokens(): Int
   private external fun nativeCancelGeneration()
@@ -105,6 +108,7 @@ class MainActivity : ComponentActivity() {
   private var defaultPenaltyLastN by mutableIntStateOf(64)
   private var defaultContextSize by mutableIntStateOf(512)
   private var defaultMaxOutputTokens by mutableIntStateOf(128)
+  private var kvCacheType by mutableStateOf("Auto")
   private var generationSeed by mutableStateOf("12345")
 
   private val llmStreamRunner: LlmStreamRunner by lazy {
@@ -186,10 +190,14 @@ class MainActivity : ComponentActivity() {
     defaultPenaltyLastN = talkViewModel.repository.getDefaultPenaltyLastN()
     defaultContextSize = talkViewModel.repository.getDefaultContextSize()
     defaultMaxOutputTokens = talkViewModel.repository.getDefaultMaxOutputTokens()
+    kvCacheType = talkViewModel.repository.getKvCacheType()
     generationSeed = prefs.getString("generation_seed", "12345") ?: "12345"
+    AgentLogger.isDebugLoggingEnabled = talkViewModel.repository.isDebugLoggingEnabled()
+    AgentLogger.currentLogLevel = talkViewModel.repository.getLogLevel()
     nativeSetThreads(cpuThreads, cpuThreadsBatch)
     nativeSetContextSize(defaultContextSize)
     nativeSetMaxOutputTokens(defaultMaxOutputTokens)
+    nativeSetKvCacheType(kvCacheType)
     setContent {
       MyApplicationTheme {
         PlayerApp(
@@ -200,6 +208,7 @@ class MainActivity : ComponentActivity() {
           defaultMinP = defaultMinP, defaultTypicalP = defaultTypicalP,
           defaultRepetitionPenalty = defaultRepetitionPenalty, defaultPenaltyLastN = defaultPenaltyLastN,
           defaultContextSize = defaultContextSize, defaultMaxOutputTokens = defaultMaxOutputTokens,
+          kvCacheType = kvCacheType,
           generationSeed = generationSeed,
           onUpdateThreads = { threads, batchThreads ->
             cpuThreads = threads; cpuThreadsBatch = batchThreads
@@ -219,12 +228,18 @@ class MainActivity : ComponentActivity() {
           onUpdateDefaultMaxOutputTokens = { tokens ->
             defaultMaxOutputTokens = tokens; talkViewModel.repository.setDefaultMaxOutputTokens(tokens); nativeSetMaxOutputTokens(tokens)
           },
+          onUpdateKvCacheType = { type ->
+            kvCacheType = type
+            talkViewModel.repository.setKvCacheType(type)
+            nativeSetKvCacheType(type)
+          },
           onUpdateGenerationSeed = { seed -> generationSeed = seed; prefs.edit().putString("generation_seed", seed).apply() },
           agentPreferences = agentPreferences,
           onResetAllSettings = {
             talkViewModel.repository.resetToDefaults()
             agentPreferences.resetAll()
             prefs.edit().clear().apply()
+            AgentLogger.reset()
             cpuThreads = 4
             cpuThreadsBatch = 4
             defaultTemperature = 0.8f
@@ -236,10 +251,12 @@ class MainActivity : ComponentActivity() {
             defaultPenaltyLastN = 64
             defaultContextSize = 8192
             defaultMaxOutputTokens = 512
+            kvCacheType = "Auto"
             generationSeed = "12345"
             nativeSetThreads(4, 4)
             nativeSetContextSize(8192)
             nativeSetMaxOutputTokens(512)
+            nativeSetKvCacheType("Auto")
           },
           onPickModel = { modelPicker.launch(arrayOf("application/octet-stream", "application/*")) },
           onUnload = { nativeUnloadModel(); modelStatus = "No model loaded"; output = "Model unloaded." },
@@ -305,6 +322,7 @@ private fun PlayerApp(
   defaultPenaltyLastN: Int,
   defaultContextSize: Int,
   defaultMaxOutputTokens: Int,
+  kvCacheType: String,
   generationSeed: String,
   agentPreferences: AgentPreferences,
   onUpdateThreads: (Int, Int) -> Unit,
@@ -317,6 +335,7 @@ private fun PlayerApp(
   onUpdateDefaultPenaltyLastN: (Int) -> Unit,
   onUpdateDefaultContextSize: (Int) -> Unit,
   onUpdateDefaultMaxOutputTokens: (Int) -> Unit,
+  onUpdateKvCacheType: (String) -> Unit,
   onUpdateGenerationSeed: (String) -> Unit,
   onResetAllSettings: () -> Unit,
   onPickModel: () -> Unit,
@@ -332,6 +351,9 @@ private fun PlayerApp(
   var destination by rememberSaveable { mutableStateOf(AppDestination.HOME) }
   var settingsSubpage by rememberSaveable { mutableStateOf(SettingsSubpage.ROOT) }
   var isGenerationTestOpen by rememberSaveable { mutableStateOf(false) }
+  var debugLogging by rememberSaveable { mutableStateOf(talkViewModel.repository.isDebugLoggingEnabled()) }
+  var logLevel by rememberSaveable { mutableStateOf(talkViewModel.repository.getLogLevel()) }
+  var experimentalFeatures by rememberSaveable { mutableStateOf(talkViewModel.repository.isExperimentalFeaturesEnabled()) }
 
   // Handle system back navigation
   BackHandler(enabled = drawerState.isOpen || isGenerationTestOpen || (destination == AppDestination.SETTINGS && settingsSubpage != SettingsSubpage.ROOT) || destination != AppDestination.HOME) {
@@ -475,10 +497,12 @@ private fun PlayerApp(
             SettingsSubpage.PERFORMANCE -> PerformanceSettingsScreen(
               currentCpuThreads = cpuThreads,
               currentCpuThreadsBatch = cpuThreadsBatch,
+              currentKvCacheType = kvCacheType,
               onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
               onBack = { settingsSubpage = SettingsSubpage.ROOT },
-              onApply = { threads, batchThreads ->
+              onApply = { threads, batchThreads, type ->
                 onUpdateThreads(threads, batchThreads)
+                onUpdateKvCacheType(type)
               }
             )
 
@@ -487,10 +511,27 @@ private fun PlayerApp(
               contextSize = defaultContextSize,
               maxOutputTokens = defaultMaxOutputTokens,
               modelStatus = modelStatus,
+              initialDebugLogging = debugLogging,
+              initialLogLevel = logLevel,
+              initialExperimentalFeatures = experimentalFeatures,
               onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
               onBack = { settingsSubpage = SettingsSubpage.ROOT },
-              onResetAllSettings = onResetAllSettings,
-              onApply = { _, _, _ -> }
+              onResetAllSettings = {
+                onResetAllSettings()
+                debugLogging = false
+                logLevel = "Normal"
+                experimentalFeatures = false
+              },
+              onApply = { newDebugLogging, newLogLevel, newExperimental ->
+                debugLogging = newDebugLogging
+                logLevel = newLogLevel
+                experimentalFeatures = newExperimental
+                talkViewModel.repository.setDebugLoggingEnabled(newDebugLogging)
+                talkViewModel.repository.setLogLevel(newLogLevel)
+                talkViewModel.repository.setExperimentalFeaturesEnabled(newExperimental)
+                AgentLogger.isDebugLoggingEnabled = newDebugLogging
+                AgentLogger.currentLogLevel = newLogLevel
+              }
             )
 
             SettingsSubpage.GENERAL -> GeneralSettingsScreen(
