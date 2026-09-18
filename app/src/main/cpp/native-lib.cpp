@@ -47,6 +47,19 @@ llama_context * g_context = nullptr;
 common_chat_templates_ptr g_chat_templates;
 std::string g_kv_cache_type = "Auto";
 
+struct AgentPrefixCache {
+    std::string session_id;
+    std::vector<llama_token> tokens;
+    bool is_valid = false;
+
+    void clear() {
+        session_id.clear();
+        tokens.clear();
+        is_valid = false;
+    }
+};
+AgentPrefixCache g_agent_prefix_cache;
+
 llama_context_params create_context_params_locked(int32_t n_ctx, const std::string & kv_type) {
     llama_context_params context_params = llama_context_default_params();
     context_params.n_ctx = n_ctx;
@@ -66,6 +79,7 @@ llama_context_params create_context_params_locked(int32_t n_ctx, const std::stri
 }
 
 void unload_model_locked() {
+    g_agent_prefix_cache.clear();
     g_chat_templates.reset();
     if (g_context != nullptr) { llama_free(g_context); g_context = nullptr; }
     if (g_model != nullptr) { llama_model_free(g_model); g_model = nullptr; }
@@ -419,6 +433,7 @@ std::string generate_sampling_locked(
     if (!tokenize_prompt(formatted_prompt, tokens)) return "ERROR: llama_tokenize failed";
     if (tokens.empty() || static_cast<int32_t>(tokens.size()) > g_n_ctx) return "ERROR: invalid token count";
 
+    g_agent_prefix_cache.clear();
     llama_memory_clear(llama_get_memory(g_context), true);
     const auto t_prompt_start = std::chrono::steady_clock::now();
     for (size_t offset = 0; offset < tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
@@ -620,6 +635,321 @@ std::string generate_sampling_locked(
         + "GENERATION SPEED: " + format_metric(generation_speed, 2) + " tokens/sec\n"
         + "GENERATED TEXT: " + generated_text;
 }
+
+std::string generate_sampling_agent_locked(
+    const std::string & prompt_input,
+    float temperature = kTemperature,
+    int32_t top_k = kTopK,
+    float top_p = kTopP,
+    float min_p = kMinP,
+    float typical_p_override = -1.0f,
+    float repetition_penalty = kRepetitionPenalty,
+    int32_t penalty_last_n = kPenaltyLastN,
+    int64_t seed = kSeed,
+    bool enable_thinking = false,
+    int32_t thinking_budget = 0,
+    const std::string & session_id = "",
+    bool enable_prefix_cache = true,
+    const std::function<void(const char*, int32_t)> & on_token = nullptr,
+    std::string * out_raw_text = nullptr,
+    const std::function<void(double)> & on_ttft = nullptr,
+    const std::function<void(int32_t, int32_t, double, double, double, double, double, int32_t)> & on_metrics = nullptr,
+    const std::function<void(int32_t, int32_t)> & on_prefix_metrics = nullptr,
+    const std::atomic<bool> * cancel_flag = nullptr
+) {
+    std::string prompt_text = prompt_input;
+    if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
+    float typical_p = typical_p_override < 0.0f ? g_default_typical_p : typical_p_override;
+    parse_prompt_sampling_tags(prompt_text, min_p, typical_p);
+    std::string formatted_prompt;
+    std::string chat_template;
+    std::vector<std::string> additional_stops;
+    std::string thinking_start_tag;
+    std::vector<std::string> thinking_end_tags;
+    if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops, enable_thinking, &thinking_start_tag, &thinking_end_tags)) {
+        g_agent_prefix_cache.clear();
+        return "ERROR: chat_template_apply failed";
+    }
+    if (!std::isfinite(min_p)) min_p = 0.0f;
+    min_p = std::max(0.0f, std::min(1.0f, min_p));
+    if (!std::isfinite(typical_p)) typical_p = 1.0f;
+    typical_p = std::max(0.0f, std::min(1.0f, typical_p));
+    if (!std::isfinite(repetition_penalty) || repetition_penalty < 0.0f) repetition_penalty = 1.0f;
+
+    std::vector<llama_token> tokens;
+    if (!tokenize_prompt(formatted_prompt, tokens)) {
+        g_agent_prefix_cache.clear();
+        return "ERROR: llama_tokenize failed";
+    }
+    if (tokens.empty() || static_cast<int32_t>(tokens.size()) > g_n_ctx) {
+        g_agent_prefix_cache.clear();
+        return "ERROR: invalid token count";
+    }
+
+    int32_t cached_tokens = 0;
+
+    if (enable_prefix_cache &&
+        g_agent_prefix_cache.is_valid &&
+        !session_id.empty() &&
+        g_agent_prefix_cache.session_id == session_id &&
+        !g_agent_prefix_cache.tokens.empty()) {
+
+        size_t lcp = 0;
+        const size_t max_cmp = std::min(g_agent_prefix_cache.tokens.size(), tokens.size());
+        while (lcp < max_cmp && g_agent_prefix_cache.tokens[lcp] == tokens[lcp]) {
+            lcp++;
+        }
+
+        // If exact match (Case A), re-decode at least 1 token to guarantee valid logits
+        if (lcp >= tokens.size() && tokens.size() > 0) {
+            lcp = tokens.size() - 1;
+        }
+
+        if (lcp > 0) {
+            // Case B & C: Evict KV Cache positions >= lcp
+            llama_memory_t mem = llama_get_memory(g_context);
+            llama_memory_seq_rm(mem, 0, static_cast<llama_pos>(lcp), -1);
+            cached_tokens = static_cast<int32_t>(lcp);
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "Agent Prefix Cache HIT: lcp=%zu / %zu tokens (cached=%d, new=%zu)",
+                                lcp, tokens.size(), cached_tokens, tokens.size() - lcp);
+        } else {
+            // Case D: Zero common tokens
+            llama_memory_clear(llama_get_memory(g_context), true);
+            cached_tokens = 0;
+            __android_log_print(ANDROID_LOG_INFO, kLogTag, "Agent Prefix Cache MISS: LCP=0, cleared full memory");
+        }
+    } else {
+        // Cold start or disabled
+        llama_memory_clear(llama_get_memory(g_context), true);
+        cached_tokens = 0;
+        __android_log_print(ANDROID_LOG_INFO, kLogTag, "Agent Prefix Cache cold start: cleared full memory");
+    }
+
+    const int32_t new_tokens_count = static_cast<int32_t>(tokens.size()) - cached_tokens;
+
+    // Prefill only non-cached tokens
+    const auto t_prompt_start = std::chrono::steady_clock::now();
+    for (size_t offset = static_cast<size_t>(cached_tokens); offset < tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
+        if (cancel_flag != nullptr && cancel_flag->load()) {
+            g_agent_prefix_cache.clear();
+            if (out_raw_text != nullptr) *out_raw_text = "";
+            return "USER_CANCEL";
+        }
+        const size_t chunk_size = std::min(tokens.size() - offset, static_cast<size_t>(kBatchSize));
+        std::vector<llama_pos> chunk_pos(chunk_size);
+        for (size_t i = 0; i < chunk_size; ++i) {
+            chunk_pos[i] = static_cast<llama_pos>(offset + i);
+        }
+        llama_batch chunk_batch = llama_batch_get_one(tokens.data() + offset, static_cast<int32_t>(chunk_size));
+        chunk_batch.pos = chunk_pos.data();
+        if (llama_decode(g_context, chunk_batch) != 0) {
+            g_agent_prefix_cache.clear();
+            return "ERROR: llama_decode failed";
+        }
+    }
+    const auto t_prompt_end = std::chrono::steady_clock::now();
+    const double prompt_processing_time_ms = std::chrono::duration<double, std::milli>(t_prompt_end - t_prompt_start).count();
+
+    const llama_vocab * vocab = llama_model_get_vocab(g_model);
+    if (vocab == nullptr) {
+        g_agent_prefix_cache.clear();
+        return "ERROR: vocab is unavailable";
+    }
+    const int32_t vocab_size = llama_vocab_n_tokens(vocab);
+    if (vocab_size <= 0) {
+        g_agent_prefix_cache.clear();
+        return "ERROR: invalid vocabulary size";
+    }
+
+    struct SamplerDeleter {
+        void operator()(struct llama_sampler * s) const {
+            if (s != nullptr) llama_sampler_free(s);
+        }
+    };
+    std::unique_ptr<struct llama_sampler, SamplerDeleter> rbudget_guard;
+
+    if (enable_thinking && thinking_budget > 0) {
+        std::string start_str = !thinking_start_tag.empty() ? thinking_start_tag : "<think>";
+        std::vector<std::string> end_strs = !thinking_end_tags.empty() ? thinking_end_tags : std::vector<std::string>{"</think>"};
+
+        std::vector<llama_token> start_tokens;
+        tokenize_prompt(start_str, start_tokens);
+
+        std::vector<std::vector<llama_token>> end_seqs;
+        for (const auto & et : end_strs) {
+            std::vector<llama_token> et_tokens;
+            if (tokenize_prompt(et, et_tokens) && !et_tokens.empty()) {
+                end_seqs.push_back(et_tokens);
+            }
+        }
+        std::vector<llama_token> forced_tokens;
+        if (!end_seqs.empty()) {
+            forced_tokens = end_seqs.front();
+        } else {
+            tokenize_prompt("</think>", forced_tokens);
+            if (!forced_tokens.empty()) {
+                end_seqs.push_back(forced_tokens);
+            }
+        }
+
+        if (!start_tokens.empty() && !end_seqs.empty()) {
+            struct llama_sampler * rbudget = common_reasoning_budget_init(
+                vocab,
+                {start_tokens},
+                end_seqs,
+                forced_tokens,
+                thinking_budget,
+                REASONING_BUDGET_IDLE
+            );
+            if (rbudget != nullptr) {
+                for (const auto & pt : tokens) {
+                    llama_sampler_accept(rbudget, pt);
+                }
+                rbudget_guard.reset(rbudget);
+            }
+        }
+    }
+
+    const int32_t max_gen_tokens = g_max_gen_tokens > 0 ? g_max_gen_tokens : 128;
+    const int32_t max_context_tokens = g_n_ctx;
+    constexpr const char * kStopSequence = "<END>";
+    const std::string stop_report = stop_tokenization_report(vocab, kStopSequence);
+
+    std::mt19937 rng;
+    std::string seed_str;
+    if (seed >= 0) { rng.seed(static_cast<uint32_t>(seed)); seed_str = std::to_string(seed); } else { std::random_device rd; rng.seed(rd()); seed_str = "RANDOM"; }
+
+    std::string generated_text;
+    int32_t generated_count = 0;
+    std::vector<llama_token> generated_tokens;
+    generated_tokens.reserve(static_cast<size_t>(max_gen_tokens));
+    bool first_token_determined = false;
+    std::chrono::steady_clock::time_point t_first_token;
+    std::string stop_reason = "MAX_TOKENS";
+
+    for (int32_t i = 0; i < max_gen_tokens; ++i) {
+        if (cancel_flag != nullptr && cancel_flag->load()) { stop_reason = "USER_CANCEL"; break; }
+        if (static_cast<int32_t>(tokens.size()) + generated_count >= max_context_tokens) { stop_reason = "MAX_CONTEXT"; break; }
+
+        const float * logits = llama_get_logits(g_context);
+        if (logits == nullptr) {
+            g_agent_prefix_cache.clear();
+            return "ERROR: logits are unavailable";
+        }
+
+        std::vector<float> penalized_logits;
+        const float * effective_logits = logits;
+        if (repetition_penalty > 1.0f && std::isfinite(repetition_penalty) && !generated_tokens.empty()) {
+            penalized_logits.assign(logits, logits + vocab_size);
+            apply_repetition_penalty(penalized_logits, vocab, generated_tokens, repetition_penalty, penalty_last_n);
+            effective_logits = penalized_logits.data();
+        }
+
+        if (rbudget_guard && common_reasoning_budget_get_state(rbudget_guard.get()) == REASONING_BUDGET_FORCING) {
+            std::vector<llama_token_data> cur(static_cast<size_t>(vocab_size));
+            for (int32_t token_id = 0; token_id < vocab_size; ++token_id) {
+                cur[static_cast<size_t>(token_id)] = { static_cast<llama_token>(token_id), effective_logits[token_id], 0.0f };
+            }
+            llama_token_data_array cur_p = { cur.data(), cur.size(), -1, false };
+            llama_sampler_apply(rbudget_guard.get(), &cur_p);
+            penalized_logits.resize(static_cast<size_t>(vocab_size));
+            for (size_t k = 0; k < cur.size(); ++k) {
+                penalized_logits[static_cast<size_t>(cur[k].id)] = cur[k].logit;
+            }
+            effective_logits = penalized_logits.data();
+        }
+
+        const llama_token current_token = sample_with_sampling_filters(effective_logits, vocab_size, temperature, top_k, top_p, min_p, typical_p, rng);
+        if (!first_token_determined) {
+            t_first_token = std::chrono::steady_clock::now();
+            first_token_determined = true;
+            if (on_ttft != nullptr) {
+                const double current_ttft_ms = std::chrono::duration<double, std::milli>(t_first_token - t_prompt_start).count();
+                on_ttft(current_ttft_ms);
+            }
+        }
+
+        if (llama_vocab_is_eog(vocab, current_token)) { stop_reason = "EOG"; break; }
+
+        char token_text[256] = {};
+        const int32_t token_length = llama_token_to_piece(vocab, current_token, token_text, static_cast<int32_t>(sizeof(token_text)), 0, true);
+        if (token_length < 0) {
+            g_agent_prefix_cache.clear();
+            return "ERROR: llama_token_to_piece failed";
+        }
+        if (token_length > 0) {
+            generated_text.append(token_text, static_cast<size_t>(token_length));
+            if (on_token != nullptr) {
+                on_token(token_text, token_length);
+            }
+        }
+        generated_count++;
+        generated_tokens.push_back(current_token);
+        if (rbudget_guard) {
+            llama_sampler_accept(rbudget_guard.get(), current_token);
+        }
+
+        const size_t stop_pos = generated_text.find(kStopSequence);
+        if (stop_pos != std::string::npos) { generated_text.erase(stop_pos); stop_reason = "STOP_SEQUENCE"; break; }
+
+        bool stopped_by_additional = false;
+        for (const auto & add_stop : additional_stops) {
+            if (add_stop.empty()) continue;
+            const size_t pos = generated_text.find(add_stop);
+            if (pos != std::string::npos) {
+                generated_text.erase(pos);
+                stop_reason = "STOP_SEQUENCE";
+                stopped_by_additional = true;
+                break;
+            }
+        }
+        if (stopped_by_additional) break;
+
+        if (generated_count >= max_gen_tokens) { stop_reason = "MAX_TOKENS"; break; }
+        if (cancel_flag != nullptr && cancel_flag->load()) { stop_reason = "USER_CANCEL"; break; }
+
+        llama_token next_token = current_token;
+        std::vector<llama_pos> next_pos = { static_cast<llama_pos>(tokens.size() + generated_count - 1) };
+        llama_batch token_batch = llama_batch_get_one(&next_token, 1);
+        token_batch.pos = next_pos.data();
+        if (llama_decode(g_context, token_batch) != 0) {
+            g_agent_prefix_cache.clear();
+            return "ERROR: llama_decode failed";
+        }
+    }
+    const auto t_generation_end = std::chrono::steady_clock::now();
+    double ttft_ms = 0.0, generation_time_ms = 0.0, total_time_ms = 0.0, generation_speed = 0.0;
+    if (first_token_determined) {
+        ttft_ms = std::chrono::duration<double, std::milli>(t_first_token - t_prompt_start).count();
+        generation_time_ms = std::chrono::duration<double, std::milli>(t_generation_end - t_first_token).count();
+        total_time_ms = std::chrono::duration<double, std::milli>(t_generation_end - t_prompt_start).count();
+        if (generation_time_ms > 0.0 && generated_count > 0) generation_speed = static_cast<double>(generated_count) / (generation_time_ms / 1000.0);
+    } else total_time_ms = prompt_processing_time_ms;
+
+    // Update Agent Prefix Cache for next step
+    if (stop_reason != "USER_CANCEL" && enable_prefix_cache && !session_id.empty()) {
+        g_agent_prefix_cache.session_id = session_id;
+        g_agent_prefix_cache.tokens = tokens;
+        g_agent_prefix_cache.is_valid = true;
+    } else {
+        g_agent_prefix_cache.clear();
+    }
+
+    __android_log_print(ANDROID_LOG_INFO, kLogTag, "Agent inference metrics: prompt_tokens=%zu (cached=%d, new=%d), gen_tokens=%d, prompt_time=%.2f ms, ttft=%.2f ms, gen_time=%.2f ms, total=%.2f ms, speed=%.2f tokens/sec",
+                        tokens.size(), cached_tokens, new_tokens_count, generated_count, prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed);
+
+    if (out_raw_text != nullptr) {
+        *out_raw_text = generated_text;
+    }
+    if (on_prefix_metrics != nullptr) {
+        on_prefix_metrics(cached_tokens, new_tokens_count);
+    }
+    if (on_metrics != nullptr) {
+        on_metrics(static_cast<int32_t>(tokens.size()), generated_count, prompt_processing_time_ms, ttft_ms, generation_time_ms, total_time_ms, generation_speed, g_n_threads);
+    }
+
+    return "SUCCESS";
+}
 }
 
 extern "C" JNIEXPORT jstring JNICALL Java_com_example_MainActivity_stringFromJNI(JNIEnv* env, jobject /* this */) { return env->NewStringUTF("Hello from native C++"); }
@@ -761,6 +1091,8 @@ Java_com_example_MainActivity_nativeSetContextSize(
     const int32_t target_ctx = static_cast<int32_t>(n_ctx);
     if (target_ctx == g_n_ctx && g_context != nullptr) return JNI_TRUE;
 
+    g_agent_prefix_cache.clear();
+
     // If a model is currently loaded, re-initialize g_context safely
     if (g_model != nullptr) {
         llama_context_params context_params = create_context_params_locked(target_ctx, g_kv_cache_type);
@@ -812,6 +1144,8 @@ Java_com_example_MainActivity_nativeSetKvCacheType(
     if (target_type == g_kv_cache_type && g_context != nullptr) {
         return JNI_TRUE;
     }
+
+    g_agent_prefix_cache.clear();
 
     // If a model is currently loaded, re-initialize g_context safely
     if (g_model != nullptr) {
@@ -1002,3 +1336,141 @@ extern "C" JNIEXPORT void JNICALL
 Java_com_example_MainActivity_nativeCancelAiGeneration(JNIEnv * /* env */, jobject /* this */) {
     g_cancel_ai_generation.store(true);
 }
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_example_MainActivity_nativeClearAgentPrefixCache(JNIEnv * /* env */, jobject /* this */) {
+    std::lock_guard<std::mutex> lock(g_model_mutex);
+    g_agent_prefix_cache.clear();
+    if (g_context != nullptr) {
+        llama_memory_clear(llama_get_memory(g_context), true);
+    }
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_com_example_MainActivity_nativeGenerateStreamAgent(
+        JNIEnv * env, jobject /* this */, jstring prompt, jfloat temperature, jint top_k, jfloat top_p,
+        jfloat min_p, jfloat typical_p, jfloat repetition_penalty, jint penalty_last_n, jlong seed,
+        jboolean enable_thinking, jint thinking_budget,
+        jstring session_id, jboolean enable_prefix_cache,
+        jobject token_callback) {
+    if (prompt == nullptr) return env->NewStringUTF("ERROR: prompt is null");
+    const char * chars = env->GetStringUTFChars(prompt, nullptr);
+    if (chars == nullptr) return env->NewStringUTF("ERROR: prompt unavailable");
+
+    std::string sid_str = "";
+    if (session_id != nullptr) {
+        const char * sid_chars = env->GetStringUTFChars(session_id, nullptr);
+        if (sid_chars != nullptr) {
+            sid_str = sid_chars;
+            env->ReleaseStringUTFChars(session_id, sid_chars);
+        }
+    }
+
+    jclass cb_class = token_callback != nullptr ? env->GetObjectClass(token_callback) : nullptr;
+    jmethodID on_token_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onToken", "(Ljava/lang/String;)V") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID on_ttft_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onTtft", "(D)V") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID on_metrics_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onMetrics", "(IIDDDDDI)V") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+    jmethodID on_prefix_metrics_mid = cb_class != nullptr ? env->GetMethodID(cb_class, "onPrefixCacheMetrics", "(II)V") : nullptr;
+    if (env->ExceptionCheck()) env->ExceptionClear();
+
+    std::string raw_text;
+    std::string status_or_err;
+    std::string pending_utf8;
+
+    {
+        std::lock_guard<std::mutex> lock(g_model_mutex);
+        g_cancel_talk_generation.store(false);
+        if (g_model == nullptr || g_context == nullptr) {
+            if (cb_class != nullptr) env->DeleteLocalRef(cb_class);
+            env->ReleaseStringUTFChars(prompt, chars);
+            return env->NewStringUTF("ERROR: model is not loaded");
+        }
+        status_or_err = generate_sampling_agent_locked(
+            chars, temperature, top_k, top_p, min_p, typical_p, repetition_penalty, penalty_last_n, seed,
+            enable_thinking == JNI_TRUE, static_cast<int32_t>(thinking_budget),
+            sid_str, enable_prefix_cache == JNI_TRUE,
+            [&](const char * piece, int32_t len) {
+                if (token_callback != nullptr && on_token_mid != nullptr && len > 0) {
+                    pending_utf8.append(piece, static_cast<size_t>(len));
+                    size_t consumed = 0;
+                    std::vector<jchar> utf16;
+                    append_valid_utf8_to_utf16(pending_utf8, consumed, utf16, false);
+                    if (consumed > 0) {
+                        pending_utf8.erase(0, consumed);
+                        jstring jpiece = env->NewString(utf16.empty() ? nullptr : utf16.data(), static_cast<jsize>(utf16.size()));
+                        if (jpiece != nullptr) {
+                            env->CallVoidMethod(token_callback, on_token_mid, jpiece);
+                            env->DeleteLocalRef(jpiece);
+                            if (env->ExceptionCheck()) {
+                                env->ExceptionClear();
+                            }
+                        }
+                    }
+                }
+            },
+            &raw_text,
+            [&](double ttft_ms) {
+                if (token_callback != nullptr && on_ttft_mid != nullptr) {
+                    env->CallVoidMethod(token_callback, on_ttft_mid, static_cast<jdouble>(ttft_ms));
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    }
+                }
+            },
+            [&](int32_t prompt_tokens, int32_t gen_tokens, double prompt_time_ms, double ttft_ms, double gen_time_ms, double total_time_ms, double speed, int32_t threads) {
+                if (token_callback != nullptr && on_metrics_mid != nullptr) {
+                    env->CallVoidMethod(token_callback, on_metrics_mid,
+                        static_cast<jint>(prompt_tokens),
+                        static_cast<jint>(gen_tokens),
+                        static_cast<jdouble>(prompt_time_ms),
+                        static_cast<jdouble>(ttft_ms),
+                        static_cast<jdouble>(gen_time_ms),
+                        static_cast<jdouble>(total_time_ms),
+                        static_cast<jdouble>(speed),
+                        static_cast<jint>(threads));
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    }
+                }
+            },
+            [&](int32_t cached_tokens, int32_t new_tokens) {
+                if (token_callback != nullptr && on_prefix_metrics_mid != nullptr) {
+                    env->CallVoidMethod(token_callback, on_prefix_metrics_mid, static_cast<jint>(cached_tokens), static_cast<jint>(new_tokens));
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    }
+                }
+            },
+            &g_cancel_talk_generation
+        );
+
+        if (!g_cancel_talk_generation.load() && !pending_utf8.empty()) {
+            size_t consumed = 0;
+            std::vector<jchar> utf16;
+            append_valid_utf8_to_utf16(pending_utf8, consumed, utf16, true);
+            if (!utf16.empty() && token_callback != nullptr && on_token_mid != nullptr) {
+                jstring jpiece = env->NewString(utf16.data(), static_cast<jsize>(utf16.size()));
+                if (jpiece != nullptr) {
+                    env->CallVoidMethod(token_callback, on_token_mid, jpiece);
+                    env->DeleteLocalRef(jpiece);
+                    if (env->ExceptionCheck()) {
+                        env->ExceptionClear();
+                    }
+                }
+            }
+            pending_utf8.clear();
+        }
+    }
+    if (cb_class != nullptr) {
+        env->DeleteLocalRef(cb_class);
+    }
+    env->ReleaseStringUTFChars(prompt, chars);
+    if (status_or_err.rfind("ERROR:", 0) == 0) {
+        return new_jstring_from_utf8(env, status_or_err);
+    }
+    return new_jstring_from_utf8(env, raw_text);
+}
+

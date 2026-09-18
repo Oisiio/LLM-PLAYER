@@ -65,6 +65,10 @@ interface NativeTokenCallback {
     speed: Double,
     threads: Int
   ) {}
+  fun onPrefixCacheMetrics(
+    cachedTokens: Int,
+    newTokens: Int
+  ) {}
 }
 
 class MainActivity : ComponentActivity() {
@@ -82,6 +86,7 @@ class MainActivity : ComponentActivity() {
   private external fun nativeGetMaxOutputTokens(): Int
   private external fun nativeCancelGeneration()
   private external fun nativeCancelAiGeneration()
+  private external fun nativeClearAgentPrefixCache()
   private external fun nativeGenerateWithSampling(
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
@@ -91,6 +96,12 @@ class MainActivity : ComponentActivity() {
     prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
     enableThinking: Boolean, thinkingBudget: Int, callback: NativeTokenCallback
+  ): String
+  private external fun nativeGenerateStreamAgent(
+    prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
+    typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+    enableThinking: Boolean, thinkingBudget: Int,
+    sessionId: String, enablePrefixCache: Boolean, callback: NativeTokenCallback
   ): String
 
   private var modelStatus by mutableStateOf("No model loaded")
@@ -115,6 +126,8 @@ class MainActivity : ComponentActivity() {
     object : LlmStreamRunner {
       override fun isModelLoaded(): Boolean = nativeIsModelLoaded()
       override fun cancelGeneration() { nativeCancelGeneration() }
+      override fun clearAgentPrefixCache() { nativeClearAgentPrefixCache() }
+
       override suspend fun runStreamingInference(
         prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
         typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
@@ -148,6 +161,47 @@ class MainActivity : ComponentActivity() {
                 promptTimeMs = promptTimeMs, genTimeMs = genTimeMs,
                 totalTimeMs = totalTimeMs, speedTokPerSec = speed,
                 threads = threads, isGenerating = false
+              ))
+            }
+          }
+        )
+      }
+
+      override suspend fun runStreamingInferenceForAgent(
+        prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
+        typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+        enableThinking: Boolean, thinkingBudget: Int,
+        sessionId: String, enablePrefixCache: Boolean,
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)?, onMetrics: ((TalkDebugMetrics) -> Unit)?
+      ): String = withContext(Dispatchers.Default) {
+        if (!nativeIsModelLoaded()) return@withContext "ERROR: Model not loaded."
+        var lastCachedTokens = 0
+        var lastNewPromptTokens: Int? = null
+
+        nativeGenerateStreamAgent(
+          prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
+          penaltyLastN, seed, enableThinking, thinkingBudget,
+          sessionId, enablePrefixCache,
+          object : NativeTokenCallback {
+            override fun onToken(token: String) { onToken(token) }
+            override fun onTtft(ttftMs: Double) { onTtft?.invoke(ttftMs) }
+            override fun onPrefixCacheMetrics(cachedTokens: Int, newTokens: Int) {
+              lastCachedTokens = cachedTokens
+              lastNewPromptTokens = newTokens
+            }
+            override fun onMetrics(
+              promptTokens: Int, genTokens: Int, promptTimeMs: Double,
+              ttftMs: Double, genTimeMs: Double, totalTimeMs: Double,
+              speed: Double, threads: Int
+            ) {
+              onMetrics?.invoke(TalkDebugMetrics(
+                ttftMs = ttftMs, promptTokens = promptTokens, genTokens = genTokens,
+                promptTimeMs = promptTimeMs, genTimeMs = genTimeMs,
+                totalTimeMs = totalTimeMs, speedTokPerSec = speed,
+                threads = threads, isGenerating = false,
+                cachedTokens = lastCachedTokens,
+                newPromptTokens = lastNewPromptTokens ?: (promptTokens - lastCachedTokens)
               ))
             }
           }

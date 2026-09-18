@@ -18,7 +18,9 @@ data class AgentStepMetrics(
     val toolExecutionTimeMs: Double = 0.0,
     val toolStartTime: Long = 0L,
     val toolEndTime: Long = 0L,
-    val stepTotalTimeMs: Double = 0.0
+    val stepTotalTimeMs: Double = 0.0,
+    val cachedTokens: Int = 0,
+    val newPromptTokens: Int = promptTokens
 )
 
 data class AgentBenchmarkSummary(
@@ -27,7 +29,9 @@ data class AgentBenchmarkSummary(
     val totalPromptTokens: Int = 0,
     val totalGenTokens: Int = 0,
     val totalToolTimeMs: Double = 0.0,
-    val stepMetrics: List<AgentStepMetrics> = emptyList()
+    val stepMetrics: List<AgentStepMetrics> = emptyList(),
+    val totalCachedTokens: Int = 0,
+    val totalNewPromptTokens: Int = totalPromptTokens
 )
 
 data class AgentStep(

@@ -77,10 +77,25 @@ class AgentPreferencesTest {
     }
 
     @Test
+    fun testPrefixCacheEnabled_defaultsToTrueAndSaves() {
+        assertTrue(agentPreferences.isPrefixCacheEnabled)
+
+        agentPreferences.isPrefixCacheEnabled = false
+        assertFalse(agentPreferences.isPrefixCacheEnabled)
+        assertEquals(false, fakePrefs.getBoolean(AgentPreferences.KEY_PREFIX_CACHE_ENABLED, true))
+
+        agentPreferences.isPrefixCacheEnabled = true
+        assertTrue(agentPreferences.isPrefixCacheEnabled)
+        assertEquals(true, fakePrefs.getBoolean(AgentPreferences.KEY_PREFIX_CACHE_ENABLED, false))
+    }
+
+    @Test
     fun testResetAll_resetsBenchmarkMode() {
         agentPreferences.isBenchmarkMode = true
+        agentPreferences.isPrefixCacheEnabled = false
         agentPreferences.resetAll()
         assertFalse(agentPreferences.isBenchmarkMode)
+        assertTrue(agentPreferences.isPrefixCacheEnabled)
     }
 
     @Test

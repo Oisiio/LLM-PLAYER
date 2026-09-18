@@ -26,7 +26,8 @@ data class AgentSamplingConfig(
     val typicalP: Float = 1.0f,
     val repetitionPenalty: Float = 1.1f,
     val penaltyLastN: Int = 64,
-    val seed: Long = 12345L
+    val seed: Long = 12345L,
+    val enablePrefixCache: Boolean = true
 )
 
 class AgentRunner(
@@ -95,6 +96,8 @@ class AgentRunner(
         isCancelRequested.set(false)
         hasLoggedStop.set(false)
         val steps = mutableListOf<AgentStep>()
+        val sessionId = java.util.UUID.randomUUID().toString()
+        llmRunner.clearAgentPrefixCache()
 
         try {
             return coroutineScope {
@@ -111,7 +114,9 @@ class AgentRunner(
                         totalPromptTokens = stepMetricsList.sumOf { it.promptTokens },
                         totalGenTokens = stepMetricsList.sumOf { it.genTokens },
                         totalToolTimeMs = stepMetricsList.sumOf { it.toolExecutionTimeMs },
-                        stepMetrics = stepMetricsList
+                        stepMetrics = stepMetricsList,
+                        totalCachedTokens = stepMetricsList.sumOf { it.cachedTokens },
+                        totalNewPromptTokens = stepMetricsList.sumOf { it.newPromptTokens }
                     )
                 }
 
@@ -152,7 +157,7 @@ class AgentRunner(
                     val textAccumulator = StringBuilder()
                     var stepDebugMetrics: TalkDebugMetrics? = null
 
-                    val rawOutput = llmRunner.runStreamingInference(
+                    val rawOutput = llmRunner.runStreamingInferenceForAgent(
                         prompt = prompt,
                         temperature = samplingConfig.temperature,
                         topK = samplingConfig.topK,
@@ -164,6 +169,8 @@ class AgentRunner(
                         seed = samplingConfig.seed,
                         enableThinking = enableThinking,
                         thinkingBudget = thinkingBudget,
+                        sessionId = sessionId,
+                        enablePrefixCache = samplingConfig.enablePrefixCache,
                         onToken = { token ->
                             if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
                                 textAccumulator.append(token)
@@ -198,9 +205,13 @@ class AgentRunner(
                         val stepEndNano = System.nanoTime()
                         val stepTotalTimeMs = (stepEndNano - stepStartNano) / 1_000_000.0
 
+                        val pTokens = stepDebugMetrics?.promptTokens ?: 0
+                        val cTokens = stepDebugMetrics?.cachedTokens ?: 0
+                        val nTokens = stepDebugMetrics?.newPromptTokens ?: (pTokens - cTokens)
+
                         val finalMetrics = AgentStepMetrics(
                             stepNumber = stepNum,
-                            promptTokens = stepDebugMetrics?.promptTokens ?: 0,
+                            promptTokens = pTokens,
                             promptTimeMs = stepDebugMetrics?.promptTimeMs ?: 0.0,
                             ttftMs = stepDebugMetrics?.ttftMs ?: 0.0,
                             genTokens = stepDebugMetrics?.genTokens ?: 0,
@@ -210,7 +221,9 @@ class AgentRunner(
                             toolExecutionTimeMs = 0.0,
                             toolStartTime = 0L,
                             toolEndTime = 0L,
-                            stepTotalTimeMs = stepTotalTimeMs
+                            stepTotalTimeMs = stepTotalTimeMs,
+                            cachedTokens = cTokens,
+                            newPromptTokens = nTokens
                         )
 
                         val finalStep = AgentStep(
@@ -289,9 +302,13 @@ class AgentRunner(
                     val stepEndNano = System.nanoTime()
                     val stepTotalTimeMs = (stepEndNano - stepStartNano) / 1_000_000.0
 
+                    val pTokens = stepDebugMetrics?.promptTokens ?: 0
+                    val cTokens = stepDebugMetrics?.cachedTokens ?: 0
+                    val nTokens = stepDebugMetrics?.newPromptTokens ?: (pTokens - cTokens)
+
                     val stepMetrics = AgentStepMetrics(
                         stepNumber = stepNum,
-                        promptTokens = stepDebugMetrics?.promptTokens ?: 0,
+                        promptTokens = pTokens,
                         promptTimeMs = stepDebugMetrics?.promptTimeMs ?: 0.0,
                         ttftMs = stepDebugMetrics?.ttftMs ?: 0.0,
                         genTokens = stepDebugMetrics?.genTokens ?: 0,
@@ -301,7 +318,9 @@ class AgentRunner(
                         toolExecutionTimeMs = toolExecutionTimeMs,
                         toolStartTime = toolStartTimestamp,
                         toolEndTime = toolEndTimestamp,
-                        stepTotalTimeMs = stepTotalTimeMs
+                        stepTotalTimeMs = stepTotalTimeMs,
+                        cachedTokens = cTokens,
+                        newPromptTokens = nTokens
                     )
 
                     val currentStep = AgentStep(
@@ -332,6 +351,7 @@ class AgentRunner(
             withContext(NonCancellable) {
                 _state.value = AgentState.IDLE
                 currentJob = null
+                llmRunner.clearAgentPrefixCache()
             }
         }
     }

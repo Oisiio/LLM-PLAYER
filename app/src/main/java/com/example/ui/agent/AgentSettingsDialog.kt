@@ -20,13 +20,15 @@ fun AgentSettingsDialog(
     initialThinkingEnabled: Boolean,
     initialThinkingBudget: Int,
     initialBenchmarkMode: Boolean = false,
+    initialPrefixCacheEnabled: Boolean = true,
     onDismiss: () -> Unit,
-    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int, benchmarkMode: Boolean) -> Unit
+    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int, benchmarkMode: Boolean, prefixCacheEnabled: Boolean) -> Unit
 ) {
     var systemPrompt by remember { mutableStateOf(initialSystemPrompt) }
     var thinkingEnabled by remember { mutableStateOf(initialThinkingEnabled) }
     var thinkingBudget by remember { mutableIntStateOf(initialThinkingBudget) }
     var benchmarkMode by remember { mutableStateOf(initialBenchmarkMode) }
+    var prefixCacheEnabled by remember { mutableStateOf(initialPrefixCacheEnabled) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -190,12 +192,39 @@ fun AgentSettingsDialog(
                         modifier = Modifier.testTag("agent_settings_benchmark_switch")
                     )
                 }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Prefix Cache Section
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Prefix Caching (KV Cache再利用)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (prefixCacheEnabled) "ON (Step間で共通PrefixのKV Cacheを再利用して高速化)" else "OFF (各Stepで全Promptを毎回Prefill)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (prefixCacheEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = prefixCacheEnabled,
+                        onCheckedChange = { prefixCacheEnabled = it },
+                        modifier = Modifier.testTag("agent_settings_prefix_cache_switch")
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(systemPrompt, thinkingEnabled, thinkingBudget, benchmarkMode)
+                    onSave(systemPrompt, thinkingEnabled, thinkingBudget, benchmarkMode, prefixCacheEnabled)
                     onDismiss()
                 },
                 modifier = Modifier.testTag("agent_settings_save_button")

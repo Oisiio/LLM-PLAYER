@@ -777,4 +777,115 @@ class AgentRunnerTest {
         assertEquals(25, step.metrics!!.genTokens)
         assertEquals(12.5, step.metrics!!.speedTokPerSec, 0.001)
     }
+
+    @Test
+    fun testAgentPrefixCaching_tracksCachedTokensAndPassesSessionId() = runBlocking {
+        var clearCacheCount = 0
+        val sessionIdsReceived = mutableListOf<String>()
+        val prefixCacheFlagsReceived = mutableListOf<Boolean>()
+        var stepCount = 0
+
+        val fakeLlm = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override fun clearAgentPrefixCache() {
+                clearCacheCount++
+            }
+
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String = ""
+
+            override suspend fun runStreamingInferenceForAgent(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int,
+                sessionId: String, enablePrefixCache: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                stepCount++
+                sessionIdsReceived.add(sessionId)
+                prefixCacheFlagsReceived.add(enablePrefixCache)
+
+                if (stepCount == 1) {
+                    // Step 1: Cold start, cachedTokens = 0
+                    onMetrics?.invoke(
+                        TalkDebugMetrics(
+                            promptTokens = 500,
+                            cachedTokens = 0,
+                            newPromptTokens = 500,
+                            promptTimeMs = 12000.0,
+                            genTokens = 200,
+                            genTimeMs = 15000.0
+                        )
+                    )
+                    return "<tool_call>{\"name\": \"calculator\", \"arguments\": {\"expression\": \"1+1\"}}</tool_call>"
+                } else {
+                    // Step 2: Warm start with Prefix Caching! cachedTokens = 500, newPromptTokens = 100
+                    onMetrics?.invoke(
+                        TalkDebugMetrics(
+                            promptTokens = 600,
+                            cachedTokens = 500,
+                            newPromptTokens = 100,
+                            promptTimeMs = 2400.0, // Dramatically reduced prompt time!
+                            genTokens = 50,
+                            genTimeMs = 4000.0
+                        )
+                    )
+                    return "答えは2です。"
+                }
+            }
+        }
+
+        val runner = AgentRunner(
+            llmRunner = fakeLlm,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = runner.run(
+            userPrompt = "1+1を計算して",
+            samplingConfig = AgentSamplingConfig(enablePrefixCache = true)
+        )
+
+        assertTrue(result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals("答えは2です。", success.finalAnswer)
+        assertEquals(2, success.steps.size)
+
+        // Verify Prefix Cache was cleared on start and finish (at least 2 times)
+        assertTrue("clearAgentPrefixCache should be called at start and end", clearCacheCount >= 2)
+
+        // Verify sessionId is non-empty and identical across all steps of the run
+        assertEquals(2, sessionIdsReceived.size)
+        assertTrue(sessionIdsReceived[0].isNotBlank())
+        assertEquals(sessionIdsReceived[0], sessionIdsReceived[1])
+        assertTrue(prefixCacheFlagsReceived.all { it })
+
+        // Verify Step 1 metrics
+        val step1 = success.steps[0]
+        assertEquals(500, step1.metrics?.promptTokens)
+        assertEquals(0, step1.metrics?.cachedTokens)
+        assertEquals(500, step1.metrics?.newPromptTokens)
+        assertEquals(12000.0, step1.metrics?.promptTimeMs ?: 0.0, 0.01)
+
+        // Verify Step 2 metrics (Prefix reused!)
+        val step2 = success.steps[1]
+        assertEquals(600, step2.metrics?.promptTokens)
+        assertEquals(500, step2.metrics?.cachedTokens)
+        assertEquals(100, step2.metrics?.newPromptTokens)
+        assertEquals(2400.0, step2.metrics?.promptTimeMs ?: 0.0, 0.01)
+
+        // Verify summary
+        val summary = success.benchmarkSummary
+        assertNotNull(summary)
+        assertEquals(1100, summary!!.totalPromptTokens)
+        assertEquals(500, summary.totalCachedTokens)
+        assertEquals(600, summary.totalNewPromptTokens)
+    }
 }

@@ -34,6 +34,7 @@ import com.example.agent.AgentBenchmarkSummary
 import com.example.agent.AgentPreferences
 import com.example.agent.AgentResult
 import com.example.agent.AgentRunner
+import com.example.agent.AgentSamplingConfig
 import com.example.agent.AgentState
 import com.example.agent.AgentStep
 import com.example.agent.AgentStepMetrics
@@ -58,6 +59,7 @@ fun AgentScreen(
     var isThinkingEnabled by remember { mutableStateOf(agentPreferences.isThinkingEnabled) }
     var thinkingBudget by remember { mutableIntStateOf(agentPreferences.thinkingBudget) }
     var isBenchmarkMode by remember { mutableStateOf(agentPreferences.isBenchmarkMode) }
+    var isPrefixCacheEnabled by remember { mutableStateOf(agentPreferences.isPrefixCacheEnabled) }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
@@ -247,6 +249,7 @@ fun AgentScreen(
                             )
                             val runResult = agentRunner.run(
                                 userPrompt = prompt,
+                                samplingConfig = AgentSamplingConfig(enablePrefixCache = isPrefixCacheEnabled),
                                 maxSteps = agentPreferences.maxSteps,
                                 systemPrompt = systemPrompt,
                                 enableThinking = isThinkingEnabled,
@@ -551,16 +554,19 @@ fun AgentScreen(
             initialThinkingEnabled = isThinkingEnabled,
             initialThinkingBudget = thinkingBudget,
             initialBenchmarkMode = isBenchmarkMode,
+            initialPrefixCacheEnabled = isPrefixCacheEnabled,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newPrompt, newThinking, newBudget, newBenchmarkMode ->
+            onSave = { newPrompt, newThinking, newBudget, newBenchmarkMode, newPrefixCache ->
                 agentPreferences.systemPrompt = newPrompt
                 agentPreferences.isThinkingEnabled = newThinking
                 agentPreferences.thinkingBudget = newBudget
                 agentPreferences.isBenchmarkMode = newBenchmarkMode
+                agentPreferences.isPrefixCacheEnabled = newPrefixCache
                 systemPrompt = newPrompt
                 isThinkingEnabled = newThinking
                 thinkingBudget = newBudget
                 isBenchmarkMode = newBenchmarkMode
+                isPrefixCacheEnabled = newPrefixCache
             }
         )
     }
@@ -627,8 +633,13 @@ private fun StepMetricsDisplay(metrics: AgentStepMetrics) {
                 )
             }
 
+            val promptDetail = if (metrics.cachedTokens > 0) {
+                "• Prompt: ${metrics.promptTokens} tok (Cached: ${metrics.cachedTokens}, New: ${metrics.newPromptTokens}) (${formatMs(metrics.promptTimeMs)} ms)"
+            } else {
+                "• Prompt: ${metrics.promptTokens} tok (${formatMs(metrics.promptTimeMs)} ms)"
+            }
             Text(
-                text = "• Prompt: ${metrics.promptTokens} tok (${formatMs(metrics.promptTimeMs)} ms)",
+                text = promptDetail,
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace
             )
@@ -674,13 +685,21 @@ private fun formatBenchmarkText(summary: AgentBenchmarkSummary): String {
     sb.appendLine("=== Agent Benchmark Results ===")
     sb.appendLine("Total Time: ${String.format(Locale.US, "%.1f", summary.totalTimeMs)} ms (${String.format(Locale.US, "%.2f", summary.totalTimeMs / 1000.0)} s)")
     sb.appendLine("Steps: ${summary.stepCount}")
-    sb.appendLine("Total Prompt Tokens: ${summary.totalPromptTokens}")
+    if (summary.totalCachedTokens > 0) {
+        sb.appendLine("Total Prompt Tokens: ${summary.totalPromptTokens} (Cached: ${summary.totalCachedTokens}, New: ${summary.totalNewPromptTokens})")
+    } else {
+        sb.appendLine("Total Prompt Tokens: ${summary.totalPromptTokens}")
+    }
     sb.appendLine("Total Generated Tokens: ${summary.totalGenTokens}")
     sb.appendLine("Total Tool Time: ${String.format(Locale.US, "%.2f", summary.totalToolTimeMs)} ms")
     sb.appendLine()
     summary.stepMetrics.forEach { step ->
         sb.appendLine("--- Step ${step.stepNumber} ---")
-        sb.appendLine("• Prompt: ${step.promptTokens} tok (${String.format(Locale.US, "%.1f", step.promptTimeMs)} ms)")
+        if (step.cachedTokens > 0) {
+            sb.appendLine("• Prompt: ${step.promptTokens} tok (Cached: ${step.cachedTokens}, New: ${step.newPromptTokens}) (${String.format(Locale.US, "%.1f", step.promptTimeMs)} ms)")
+        } else {
+            sb.appendLine("• Prompt: ${step.promptTokens} tok (${String.format(Locale.US, "%.1f", step.promptTimeMs)} ms)")
+        }
         sb.appendLine("• Generated: ${step.genTokens} tok (${String.format(Locale.US, "%.1f", step.genTimeMs)} ms)")
         sb.appendLine("• Speed: ${String.format(Locale.US, "%.2f", step.speedTokPerSec)} tok/s")
         sb.appendLine("• TTFT: ${String.format(Locale.US, "%.1f", step.ttftMs)} ms")

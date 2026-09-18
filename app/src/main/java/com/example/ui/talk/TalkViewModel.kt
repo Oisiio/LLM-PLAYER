@@ -77,6 +77,42 @@ interface LlmStreamRunner {
         onTtft = onTtft,
         onMetrics = onMetrics
     )
+
+    suspend fun runStreamingInferenceForAgent(
+        prompt: String,
+        temperature: Float,
+        topK: Int,
+        topP: Float,
+        minP: Float,
+        typicalP: Float,
+        repetitionPenalty: Float,
+        penaltyLastN: Int,
+        seed: Long,
+        enableThinking: Boolean,
+        thinkingBudget: Int,
+        sessionId: String,
+        enablePrefixCache: Boolean,
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)? = null,
+        onMetrics: ((TalkDebugMetrics) -> Unit)? = null
+    ): String = runStreamingInference(
+        prompt = prompt,
+        temperature = temperature,
+        topK = topK,
+        topP = topP,
+        minP = minP,
+        typicalP = typicalP,
+        repetitionPenalty = repetitionPenalty,
+        penaltyLastN = penaltyLastN,
+        seed = seed,
+        enableThinking = enableThinking,
+        thinkingBudget = thinkingBudget,
+        onToken = onToken,
+        onTtft = onTtft,
+        onMetrics = onMetrics
+    )
+
+    fun clearAgentPrefixCache() {}
 }
 
 class TalkViewModel(

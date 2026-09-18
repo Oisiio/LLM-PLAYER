@@ -9,5 +9,7 @@ data class TalkDebugMetrics(
     val totalTimeMs: Double? = null,
     val speedTokPerSec: Double? = null,
     val threads: Int = 4,
-    val isGenerating: Boolean = false
+    val isGenerating: Boolean = false,
+    val cachedTokens: Int = 0,
+    val newPromptTokens: Int? = null
 )
