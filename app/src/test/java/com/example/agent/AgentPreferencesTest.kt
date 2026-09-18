@@ -61,6 +61,29 @@ class AgentPreferencesTest {
     }
 
     @Test
+    fun testDefaultBenchmarkMode_isFalse() {
+        assertFalse(agentPreferences.isBenchmarkMode)
+    }
+
+    @Test
+    fun testSaveAndGetBenchmarkMode() {
+        agentPreferences.isBenchmarkMode = true
+        assertTrue(agentPreferences.isBenchmarkMode)
+        assertEquals(true, fakePrefs.getBoolean(AgentPreferences.KEY_BENCHMARK_MODE, false))
+
+        agentPreferences.isBenchmarkMode = false
+        assertFalse(agentPreferences.isBenchmarkMode)
+        assertEquals(false, fakePrefs.getBoolean(AgentPreferences.KEY_BENCHMARK_MODE, true))
+    }
+
+    @Test
+    fun testResetAll_resetsBenchmarkMode() {
+        agentPreferences.isBenchmarkMode = true
+        agentPreferences.resetAll()
+        assertFalse(agentPreferences.isBenchmarkMode)
+    }
+
+    @Test
     fun testSimulatedAppRestart_persistsValues() {
         // 1. User edits settings
         agentPreferences.systemPrompt = "永続化テストプロンプト"

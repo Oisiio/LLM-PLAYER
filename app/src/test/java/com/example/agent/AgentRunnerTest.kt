@@ -718,4 +718,63 @@ class AgentRunnerTest {
         assertTrue(idxInput < idxSteps)
         assertTrue(idxSteps < idxAnswer)
     }
+
+    @Test
+    fun testAgentBenchmarkSummary_isPopulatedOnSuccess() = runBlocking {
+        val fakeLlm = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                onMetrics?.invoke(
+                    TalkDebugMetrics(
+                        promptTokens = 120,
+                        promptTimeMs = 1500.0,
+                        ttftMs = 1500.0,
+                        genTokens = 25,
+                        genTimeMs = 2000.0,
+                        speedTokPerSec = 12.5
+                    )
+                )
+                return "The answer is 42."
+            }
+
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                return runStreamingInference(
+                    prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
+                    penaltyLastN, seed, enableThinking, onToken, onTtft, onMetrics
+                )
+            }
+        }
+
+        val runner = AgentRunner(fakeLlm)
+        val result = runner.run("Calculate something")
+
+        assertTrue(result is AgentResult.Success)
+        val summary = result.benchmarkSummary
+        assertNotNull("Benchmark summary should be present", summary)
+        assertEquals(1, summary!!.stepCount)
+        assertEquals(120, summary.totalPromptTokens)
+        assertEquals(25, summary.totalGenTokens)
+        assertTrue(summary.totalTimeMs > 0.0)
+
+        val step = result.steps.first()
+        assertNotNull(step.metrics)
+        assertEquals(120, step.metrics!!.promptTokens)
+        assertEquals(1500.0, step.metrics!!.promptTimeMs, 0.001)
+        assertEquals(25, step.metrics!!.genTokens)
+        assertEquals(12.5, step.metrics!!.speedTokPerSec, 0.001)
+    }
 }

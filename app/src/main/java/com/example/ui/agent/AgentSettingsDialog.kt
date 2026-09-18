@@ -19,12 +19,14 @@ fun AgentSettingsDialog(
     initialSystemPrompt: String,
     initialThinkingEnabled: Boolean,
     initialThinkingBudget: Int,
+    initialBenchmarkMode: Boolean = false,
     onDismiss: () -> Unit,
-    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int) -> Unit
+    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int, benchmarkMode: Boolean) -> Unit
 ) {
     var systemPrompt by remember { mutableStateOf(initialSystemPrompt) }
     var thinkingEnabled by remember { mutableStateOf(initialThinkingEnabled) }
     var thinkingBudget by remember { mutableIntStateOf(initialThinkingBudget) }
+    var benchmarkMode by remember { mutableStateOf(initialBenchmarkMode) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -161,12 +163,39 @@ fun AgentSettingsDialog(
                         }
                     }
                 }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Benchmark Mode Section
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Benchmark Mode",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (benchmarkMode) "ON (各Step・Tool・推論の詳細メトリクスを表示)" else "OFF (通常の表示)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (benchmarkMode) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = benchmarkMode,
+                        onCheckedChange = { benchmarkMode = it },
+                        modifier = Modifier.testTag("agent_settings_benchmark_switch")
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(systemPrompt, thinkingEnabled, thinkingBudget)
+                    onSave(systemPrompt, thinkingEnabled, thinkingBudget, benchmarkMode)
                     onDismiss()
                 },
                 modifier = Modifier.testTag("agent_settings_save_button")

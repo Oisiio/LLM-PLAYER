@@ -3,6 +3,7 @@ package com.example.agent
 import com.example.agent.tools.CalculatorTool
 import com.example.agent.tools.DateTimeTool
 import com.example.ui.talk.LlmStreamRunner
+import com.example.ui.talk.TalkDebugMetrics
 import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
@@ -99,7 +100,20 @@ class AgentRunner(
             return coroutineScope {
                 val currentCoroutineJob = coroutineContext.job
                 currentJob = currentCoroutineJob
+                val agentStartNano = System.nanoTime()
                 logger.log("[Agent] start")
+
+                fun buildBenchmarkSummary(totalTimeMs: Double): AgentBenchmarkSummary {
+                    val stepMetricsList = steps.mapNotNull { it.metrics }
+                    return AgentBenchmarkSummary(
+                        totalTimeMs = totalTimeMs,
+                        stepCount = steps.size,
+                        totalPromptTokens = stepMetricsList.sumOf { it.promptTokens },
+                        totalGenTokens = stepMetricsList.sumOf { it.genTokens },
+                        totalToolTimeMs = stepMetricsList.sumOf { it.toolExecutionTimeMs },
+                        stepMetrics = stepMetricsList
+                    )
+                }
 
                 if (!llmRunner.isModelLoaded()) {
                     val err = "ERROR: Model not loaded."
@@ -108,11 +122,14 @@ class AgentRunner(
                 }
 
                 for (stepNum in 1..maxSteps) {
+                    val stepStartNano = System.nanoTime()
+
                     // 1. Cooperative check before step
                     ensureActive()
                     if (isCancelRequested.get() || _state.value == AgentState.CANCELLING) {
                         logStopIfNeeded()
-                        return@coroutineScope AgentResult.Cancelled(steps = steps)
+                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                        return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
                     }
 
                     logger.log("[Agent] step=$stepNum")
@@ -128,10 +145,13 @@ class AgentRunner(
                     ensureActive()
                     if (isCancelRequested.get() || _state.value == AgentState.CANCELLING) {
                         logStopIfNeeded()
-                        return@coroutineScope AgentResult.Cancelled(steps = steps)
+                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                        return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
                     }
 
                     val textAccumulator = StringBuilder()
+                    var stepDebugMetrics: TalkDebugMetrics? = null
+
                     val rawOutput = llmRunner.runStreamingInference(
                         prompt = prompt,
                         temperature = samplingConfig.temperature,
@@ -149,18 +169,23 @@ class AgentRunner(
                                 textAccumulator.append(token)
                                 onToken?.invoke(token)
                             }
+                        },
+                        onMetrics = { metrics ->
+                            stepDebugMetrics = metrics
                         }
                     )
 
                     // 3. Cooperative check after LLM generation
                     if (isCancelRequested.get() || _state.value == AgentState.CANCELLING || !currentCoroutineJob.isActive) {
                         logStopIfNeeded()
-                        return@coroutineScope AgentResult.Cancelled(steps = steps)
+                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                        return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
                     }
 
                     if (rawOutput.startsWith("ERROR:")) {
                         logger.log("[Agent] error=$rawOutput")
-                        return@coroutineScope AgentResult.Error(rawOutput, steps)
+                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                        return@coroutineScope AgentResult.Error(rawOutput, steps, buildBenchmarkSummary(agentTotalTimeMs))
                     }
 
                     // Check if a tool call is present in the LLM output
@@ -170,17 +195,42 @@ class AgentRunner(
                         // No tool call requested -> Final Answer reached
                         logger.log("[Agent] final")
                         val cleanAnswer = ToolCallParser.removeToolCallTags(rawOutput).trim()
+                        val stepEndNano = System.nanoTime()
+                        val stepTotalTimeMs = (stepEndNano - stepStartNano) / 1_000_000.0
+
+                        val finalMetrics = AgentStepMetrics(
+                            stepNumber = stepNum,
+                            promptTokens = stepDebugMetrics?.promptTokens ?: 0,
+                            promptTimeMs = stepDebugMetrics?.promptTimeMs ?: 0.0,
+                            ttftMs = stepDebugMetrics?.ttftMs ?: 0.0,
+                            genTokens = stepDebugMetrics?.genTokens ?: 0,
+                            genTimeMs = stepDebugMetrics?.genTimeMs ?: 0.0,
+                            speedTokPerSec = stepDebugMetrics?.speedTokPerSec ?: 0.0,
+                            toolName = null,
+                            toolExecutionTimeMs = 0.0,
+                            toolStartTime = 0L,
+                            toolEndTime = 0L,
+                            stepTotalTimeMs = stepTotalTimeMs
+                        )
+
                         val finalStep = AgentStep(
                             stepNumber = stepNum,
                             prompt = prompt,
                             rawLlmOutput = rawOutput,
                             toolCall = null,
                             toolResult = null,
-                            isFinal = true
+                            isFinal = true,
+                            metrics = finalMetrics
                         )
                         steps.add(finalStep)
                         onStepUpdate?.invoke(finalStep)
-                        return@coroutineScope AgentResult.Success(cleanAnswer.ifEmpty { rawOutput }, steps)
+
+                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                        return@coroutineScope AgentResult.Success(
+                            cleanAnswer.ifEmpty { rawOutput },
+                            steps,
+                            buildBenchmarkSummary(agentTotalTimeMs)
+                        )
                     }
 
                     // Tool call detected
@@ -190,6 +240,10 @@ class AgentRunner(
                         ?: toolCall.arguments.values.firstOrNull()
                         ?: ""
                     logger.log("[Agent] expression=$expr")
+
+                    var toolStartTimestamp = 0L
+                    var toolEndTimestamp = 0L
+                    var toolExecutionTimeMs = 0.0
 
                     val tool = toolRegistry.getTool(toolCall.toolName)
                     val toolResult = if (tool == null) {
@@ -201,16 +255,23 @@ class AgentRunner(
                         ensureActive()
                         if (isCancelRequested.get() || _state.value == AgentState.CANCELLING) {
                             logStopIfNeeded()
-                            return@coroutineScope AgentResult.Cancelled(steps = steps)
+                            val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                            return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
                         }
 
+                        toolStartTimestamp = System.currentTimeMillis()
+                        val toolStartNano = System.nanoTime()
                         val res = tool.execute(toolCall.arguments)
+                        val toolEndNano = System.nanoTime()
+                        toolEndTimestamp = System.currentTimeMillis()
+                        toolExecutionTimeMs = (toolEndNano - toolStartNano) / 1_000_000.0
 
                         // 5. Cooperative check after Tool execution
                         ensureActive()
                         if (isCancelRequested.get() || _state.value == AgentState.CANCELLING) {
                             logStopIfNeeded()
-                            return@coroutineScope AgentResult.Cancelled(steps = steps)
+                            val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                            return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
                         }
 
                         res
@@ -225,13 +286,32 @@ class AgentRunner(
                     }
                     logger.log("[Agent] result=$resultLog")
 
+                    val stepEndNano = System.nanoTime()
+                    val stepTotalTimeMs = (stepEndNano - stepStartNano) / 1_000_000.0
+
+                    val stepMetrics = AgentStepMetrics(
+                        stepNumber = stepNum,
+                        promptTokens = stepDebugMetrics?.promptTokens ?: 0,
+                        promptTimeMs = stepDebugMetrics?.promptTimeMs ?: 0.0,
+                        ttftMs = stepDebugMetrics?.ttftMs ?: 0.0,
+                        genTokens = stepDebugMetrics?.genTokens ?: 0,
+                        genTimeMs = stepDebugMetrics?.genTimeMs ?: 0.0,
+                        speedTokPerSec = stepDebugMetrics?.speedTokPerSec ?: 0.0,
+                        toolName = toolCall.toolName,
+                        toolExecutionTimeMs = toolExecutionTimeMs,
+                        toolStartTime = toolStartTimestamp,
+                        toolEndTime = toolEndTimestamp,
+                        stepTotalTimeMs = stepTotalTimeMs
+                    )
+
                     val currentStep = AgentStep(
                         stepNumber = stepNum,
                         prompt = prompt,
                         rawLlmOutput = rawOutput,
                         toolCall = toolCall,
                         toolResult = toolResult,
-                        isFinal = false
+                        isFinal = false,
+                        metrics = stepMetrics
                     )
                     steps.add(currentStep)
                     onStepUpdate?.invoke(currentStep)
@@ -239,7 +319,8 @@ class AgentRunner(
 
                 // Reached max steps
                 logStopIfNeeded()
-                AgentResult.MaxStepsReached(steps = steps)
+                val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                AgentResult.MaxStepsReached(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
             }
         } catch (e: CancellationException) {
             logStopIfNeeded()
