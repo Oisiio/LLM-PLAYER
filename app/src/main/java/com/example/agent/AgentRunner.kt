@@ -85,6 +85,7 @@ class AgentRunner(
         systemPrompt: String = AgentPromptBuilder.DEFAULT_SYSTEM_PROMPT,
         enableThinking: Boolean = true,
         thinkingBudget: Int = 1024,
+        enableDiagnostics: Boolean = false,
         onStepUpdate: ((AgentStep) -> Unit)? = null,
         onToken: ((String) -> Unit)? = null
     ): AgentResult {
@@ -116,7 +117,8 @@ class AgentRunner(
                         totalToolTimeMs = stepMetricsList.sumOf { it.toolExecutionTimeMs },
                         stepMetrics = stepMetricsList,
                         totalCachedTokens = stepMetricsList.sumOf { it.cachedTokens },
-                        totalNewPromptTokens = stepMetricsList.sumOf { it.newPromptTokens }
+                        totalNewPromptTokens = stepMetricsList.sumOf { it.newPromptTokens },
+                        diagnosticsList = stepMetricsList.mapNotNull { it.diagnostics }
                     )
                 }
 
@@ -139,48 +141,97 @@ class AgentRunner(
 
                     logger.log("[Agent] step=$stepNum")
 
-                    val prompt = AgentPromptBuilder.buildStepPrompt(
-                        userMessage = userPrompt,
-                        tools = toolRegistry.getAllTools(),
-                        previousSteps = steps,
-                        systemPrompt = systemPrompt
-                    )
-
-                    // 2. Cooperative check before LLM generation
-                    ensureActive()
-                    if (isCancelRequested.get() || _state.value == AgentState.CANCELLING) {
-                        logStopIfNeeded()
-                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
-                        return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
-                    }
-
+                    val isFirstStep = stepNum == 1
+                    val prompt: String
                     val textAccumulator = StringBuilder()
                     var stepDebugMetrics: TalkDebugMetrics? = null
+                    var stepDiagnostics: StepDiagnostics? = null
 
-                    val rawOutput = llmRunner.runStreamingInferenceForAgent(
-                        prompt = prompt,
-                        temperature = samplingConfig.temperature,
-                        topK = samplingConfig.topK,
-                        topP = samplingConfig.topP,
-                        minP = samplingConfig.minP,
-                        typicalP = samplingConfig.typicalP,
-                        repetitionPenalty = samplingConfig.repetitionPenalty,
-                        penaltyLastN = samplingConfig.penaltyLastN,
-                        seed = samplingConfig.seed,
-                        enableThinking = enableThinking,
-                        thinkingBudget = thinkingBudget,
-                        sessionId = sessionId,
-                        enablePrefixCache = samplingConfig.enablePrefixCache,
-                        onToken = { token ->
-                            if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
-                                textAccumulator.append(token)
-                                onToken?.invoke(token)
-                            }
-                        },
-                        onMetrics = { metrics ->
-                            stepDebugMetrics = metrics
+                    val rawOutput = if (isFirstStep) {
+                        prompt = AgentPromptBuilder.buildInitialPrompt(
+                            userMessage = userPrompt,
+                            tools = toolRegistry.getAllTools(),
+                            systemPrompt = systemPrompt
+                        )
+
+                        // 2. Cooperative check before LLM generation
+                        ensureActive()
+                        if (isCancelRequested.get() || _state.value == AgentState.CANCELLING) {
+                            logStopIfNeeded()
+                            val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                            return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
                         }
-                    )
+
+                        llmRunner.runAgentSessionInit(
+                            prompt = prompt,
+                            temperature = samplingConfig.temperature,
+                            topK = samplingConfig.topK,
+                            topP = samplingConfig.topP,
+                            minP = samplingConfig.minP,
+                            typicalP = samplingConfig.typicalP,
+                            repetitionPenalty = samplingConfig.repetitionPenalty,
+                            penaltyLastN = samplingConfig.penaltyLastN,
+                            seed = samplingConfig.seed,
+                            enableThinking = enableThinking,
+                            thinkingBudget = thinkingBudget,
+                            sessionId = sessionId,
+                            enableDiagnostics = enableDiagnostics,
+                            onToken = { token ->
+                                if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
+                                    textAccumulator.append(token)
+                                    onToken?.invoke(token)
+                                }
+                            },
+                            onMetrics = { metrics ->
+                                stepDebugMetrics = metrics
+                            },
+                            onDiagnostics = { diag ->
+                                stepDiagnostics = diag
+                            }
+                        )
+                    } else {
+                        val lastStep = steps.last()
+                        prompt = AgentPromptBuilder.buildToolDeltaPrompt(
+                            toolName = lastStep.toolCall?.toolName ?: "unknown",
+                            toolResult = lastStep.toolResult ?: ToolExecutionResult.Error("No tool result found from previous step")
+                        )
+
+                        // 2. Cooperative check before LLM generation
+                        ensureActive()
+                        if (isCancelRequested.get() || _state.value == AgentState.CANCELLING) {
+                            logStopIfNeeded()
+                            val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                            return@coroutineScope AgentResult.Cancelled(steps = steps, benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs))
+                        }
+
+                        llmRunner.runAgentSessionAppend(
+                            deltaPrompt = prompt,
+                            temperature = samplingConfig.temperature,
+                            topK = samplingConfig.topK,
+                            topP = samplingConfig.topP,
+                            minP = samplingConfig.minP,
+                            typicalP = samplingConfig.typicalP,
+                            repetitionPenalty = samplingConfig.repetitionPenalty,
+                            penaltyLastN = samplingConfig.penaltyLastN,
+                            seed = samplingConfig.seed,
+                            enableThinking = enableThinking,
+                            thinkingBudget = thinkingBudget,
+                            sessionId = sessionId,
+                            enableDiagnostics = enableDiagnostics,
+                            onToken = { token ->
+                                if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
+                                    textAccumulator.append(token)
+                                    onToken?.invoke(token)
+                                }
+                            },
+                            onMetrics = { metrics ->
+                                stepDebugMetrics = metrics
+                            },
+                            onDiagnostics = { diag ->
+                                stepDiagnostics = diag
+                            }
+                        )
+                    }
 
                     // 3. Cooperative check after LLM generation
                     if (isCancelRequested.get() || _state.value == AgentState.CANCELLING || !currentCoroutineJob.isActive) {
@@ -223,7 +274,8 @@ class AgentRunner(
                             toolEndTime = 0L,
                             stepTotalTimeMs = stepTotalTimeMs,
                             cachedTokens = cTokens,
-                            newPromptTokens = nTokens
+                            newPromptTokens = nTokens,
+                            diagnostics = stepDiagnostics
                         )
 
                         val finalStep = AgentStep(
@@ -274,7 +326,13 @@ class AgentRunner(
 
                         toolStartTimestamp = System.currentTimeMillis()
                         val toolStartNano = System.nanoTime()
-                        val res = tool.execute(toolCall.arguments)
+                        val res = try {
+                            tool.execute(toolCall.arguments)
+                        } catch (e: Throwable) {
+                            val err = "Tool execution exception: ${e.message ?: e.javaClass.simpleName}"
+                            logger.log("[Agent] error=$err")
+                            ToolExecutionResult.Error(err)
+                        }
                         val toolEndNano = System.nanoTime()
                         toolEndTimestamp = System.currentTimeMillis()
                         toolExecutionTimeMs = (toolEndNano - toolStartNano) / 1_000_000.0
@@ -320,7 +378,8 @@ class AgentRunner(
                         toolEndTime = toolEndTimestamp,
                         stepTotalTimeMs = stepTotalTimeMs,
                         cachedTokens = cTokens,
-                        newPromptTokens = nTokens
+                        newPromptTokens = nTokens,
+                        diagnostics = stepDiagnostics
                     )
 
                     val currentStep = AgentStep(
@@ -351,6 +410,7 @@ class AgentRunner(
             withContext(NonCancellable) {
                 _state.value = AgentState.IDLE
                 currentJob = null
+                llmRunner.clearAgentSession()
                 llmRunner.clearAgentPrefixCache()
             }
         }

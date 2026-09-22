@@ -34,6 +34,7 @@ import androidx.lifecycle.lifecycleScope
 import com.example.agent.AgentLogger
 import com.example.agent.AgentPreferences
 import com.example.agent.AgentRunner
+import com.example.agent.StepDiagnostics
 import com.example.ui.agent.AgentScreen
 import com.example.ui.home.HomeScreen
 import com.example.ui.navigation.AppDestination
@@ -69,6 +70,7 @@ interface NativeTokenCallback {
     cachedTokens: Int,
     newTokens: Int
   ) {}
+  fun onDiagnostics(diagnosticsJson: String) {}
 }
 
 class MainActivity : ComponentActivity() {
@@ -102,6 +104,19 @@ class MainActivity : ComponentActivity() {
     typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
     enableThinking: Boolean, thinkingBudget: Int,
     sessionId: String, enablePrefixCache: Boolean, callback: NativeTokenCallback
+  ): String
+  private external fun nativeClearAgentSession()
+  private external fun nativeGenerateStreamAgentSessionInit(
+    prompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
+    typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+    enableThinking: Boolean, thinkingBudget: Int,
+    sessionId: String, enableDiagnostics: Boolean, callback: NativeTokenCallback
+  ): String
+  private external fun nativeGenerateStreamAgentSessionAppend(
+    deltaPrompt: String, temperature: Float, topK: Int, topP: Float, minP: Float,
+    typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+    enableThinking: Boolean, thinkingBudget: Int,
+    sessionId: String, enableDiagnostics: Boolean, callback: NativeTokenCallback
   ): String
 
   private var modelStatus by mutableStateOf("No model loaded")
@@ -203,6 +218,114 @@ class MainActivity : ComponentActivity() {
                 cachedTokens = lastCachedTokens,
                 newPromptTokens = lastNewPromptTokens ?: (promptTokens - lastCachedTokens)
               ))
+            }
+          }
+        )
+      }
+
+      override fun clearAgentSession() {
+        nativeClearAgentSession()
+      }
+
+      override suspend fun runAgentSessionInit(
+        prompt: String,
+        temperature: Float, topK: Int, topP: Float, minP: Float,
+        typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+        enableThinking: Boolean, thinkingBudget: Int,
+        sessionId: String,
+        enableDiagnostics: Boolean,
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)?,
+        onMetrics: ((TalkDebugMetrics) -> Unit)?,
+        onDiagnostics: ((StepDiagnostics) -> Unit)?
+      ): String = withContext(Dispatchers.Default) {
+        var lastCachedTokens = 0
+        var lastNewPromptTokens: Int? = null
+
+        nativeGenerateStreamAgentSessionInit(
+          prompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
+          penaltyLastN, seed, enableThinking, thinkingBudget,
+          sessionId, enableDiagnostics,
+          object : NativeTokenCallback {
+            override fun onToken(token: String) { onToken(token) }
+            override fun onTtft(ttftMs: Double) { onTtft?.invoke(ttftMs) }
+            override fun onPrefixCacheMetrics(cachedTokens: Int, newTokens: Int) {
+              lastCachedTokens = cachedTokens
+              lastNewPromptTokens = newTokens
+            }
+            override fun onMetrics(
+              promptTokens: Int, genTokens: Int, promptTimeMs: Double,
+              ttftMs: Double, genTimeMs: Double, totalTimeMs: Double,
+              speed: Double, threads: Int
+            ) {
+              onMetrics?.invoke(TalkDebugMetrics(
+                ttftMs = ttftMs, promptTokens = promptTokens, genTokens = genTokens,
+                promptTimeMs = promptTimeMs, genTimeMs = genTimeMs,
+                totalTimeMs = totalTimeMs, speedTokPerSec = speed,
+                threads = threads, isGenerating = false,
+                cachedTokens = lastCachedTokens,
+                newPromptTokens = lastNewPromptTokens ?: (promptTokens - lastCachedTokens)
+              ))
+            }
+            override fun onDiagnostics(diagnosticsJson: String) {
+              try {
+                val diag = StepDiagnostics.fromJson(diagnosticsJson)
+                onDiagnostics?.invoke(diag)
+              } catch (e: Exception) {
+                // Ignore parsing errors
+              }
+            }
+          }
+        )
+      }
+
+      override suspend fun runAgentSessionAppend(
+        deltaPrompt: String,
+        temperature: Float, topK: Int, topP: Float, minP: Float,
+        typicalP: Float, repetitionPenalty: Float, penaltyLastN: Int, seed: Long,
+        enableThinking: Boolean, thinkingBudget: Int,
+        sessionId: String,
+        enableDiagnostics: Boolean,
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)?,
+        onMetrics: ((TalkDebugMetrics) -> Unit)?,
+        onDiagnostics: ((StepDiagnostics) -> Unit)?
+      ): String = withContext(Dispatchers.Default) {
+        var lastCachedTokens = 0
+        var lastNewPromptTokens: Int? = null
+
+        nativeGenerateStreamAgentSessionAppend(
+          deltaPrompt, temperature, topK, topP, minP, typicalP, repetitionPenalty,
+          penaltyLastN, seed, enableThinking, thinkingBudget,
+          sessionId, enableDiagnostics,
+          object : NativeTokenCallback {
+            override fun onToken(token: String) { onToken(token) }
+            override fun onTtft(ttftMs: Double) { onTtft?.invoke(ttftMs) }
+            override fun onPrefixCacheMetrics(cachedTokens: Int, newTokens: Int) {
+              lastCachedTokens = cachedTokens
+              lastNewPromptTokens = newTokens
+            }
+            override fun onMetrics(
+              promptTokens: Int, genTokens: Int, promptTimeMs: Double,
+              ttftMs: Double, genTimeMs: Double, totalTimeMs: Double,
+              speed: Double, threads: Int
+            ) {
+              onMetrics?.invoke(TalkDebugMetrics(
+                ttftMs = ttftMs, promptTokens = promptTokens, genTokens = genTokens,
+                promptTimeMs = promptTimeMs, genTimeMs = genTimeMs,
+                totalTimeMs = totalTimeMs, speedTokPerSec = speed,
+                threads = threads, isGenerating = false,
+                cachedTokens = lastCachedTokens,
+                newPromptTokens = lastNewPromptTokens ?: (promptTokens - lastCachedTokens)
+              ))
+            }
+            override fun onDiagnostics(diagnosticsJson: String) {
+              try {
+                val diag = StepDiagnostics.fromJson(diagnosticsJson)
+                onDiagnostics?.invoke(diag)
+              } catch (e: Exception) {
+                // Ignore parsing errors
+              }
             }
           }
         )

@@ -38,6 +38,7 @@ import com.example.agent.AgentSamplingConfig
 import com.example.agent.AgentState
 import com.example.agent.AgentStep
 import com.example.agent.AgentStepMetrics
+import com.example.agent.StepDiagnostics
 import com.example.agent.ToolExecutionResult
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
@@ -60,6 +61,7 @@ fun AgentScreen(
     var thinkingBudget by remember { mutableIntStateOf(agentPreferences.thinkingBudget) }
     var isBenchmarkMode by remember { mutableStateOf(agentPreferences.isBenchmarkMode) }
     var isPrefixCacheEnabled by remember { mutableStateOf(agentPreferences.isPrefixCacheEnabled) }
+    var isDiagnosticsEnabled by remember { mutableStateOf(agentPreferences.isDiagnosticsEnabled) }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
@@ -254,6 +256,7 @@ fun AgentScreen(
                                 systemPrompt = systemPrompt,
                                 enableThinking = isThinkingEnabled,
                                 thinkingBudget = thinkingBudget,
+                                enableDiagnostics = isDiagnosticsEnabled,
                                 onStepUpdate = { newStep ->
                                     steps = steps + newStep
                                     liveTokens = ""
@@ -555,18 +558,21 @@ fun AgentScreen(
             initialThinkingBudget = thinkingBudget,
             initialBenchmarkMode = isBenchmarkMode,
             initialPrefixCacheEnabled = isPrefixCacheEnabled,
+            initialDiagnosticsEnabled = isDiagnosticsEnabled,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newPrompt, newThinking, newBudget, newBenchmarkMode, newPrefixCache ->
+            onSave = { newPrompt, newThinking, newBudget, newBenchmarkMode, newPrefixCache, newDiagnostics ->
                 agentPreferences.systemPrompt = newPrompt
                 agentPreferences.isThinkingEnabled = newThinking
                 agentPreferences.thinkingBudget = newBudget
                 agentPreferences.isBenchmarkMode = newBenchmarkMode
                 agentPreferences.isPrefixCacheEnabled = newPrefixCache
+                agentPreferences.isDiagnosticsEnabled = newDiagnostics
                 systemPrompt = newPrompt
                 isThinkingEnabled = newThinking
                 thinkingBudget = newBudget
                 isBenchmarkMode = newBenchmarkMode
                 isPrefixCacheEnabled = newPrefixCache
+                isDiagnosticsEnabled = newDiagnostics
             }
         )
     }
@@ -668,6 +674,26 @@ private fun StepMetricsDisplay(metrics: AgentStepMetrics) {
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace
             )
+
+            metrics.diagnostics?.let { diag ->
+                HorizontalDivider(
+                    modifier = Modifier.padding(vertical = 4.dp),
+                    color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
+                )
+                Text(
+                    text = "🔬 Generation Diagnostics",
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Text(
+                    text = diag.formatReport(),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    fontSize = 11.sp,
+                    lineHeight = 15.sp
+                )
+            }
         }
     }
 }
@@ -709,6 +735,10 @@ private fun formatBenchmarkText(summary: AgentBenchmarkSummary): String {
             sb.appendLine("• Tool: -")
         }
         sb.appendLine("• Step Total: ${String.format(Locale.US, "%.1f", step.stepTotalTimeMs)} ms")
+        step.diagnostics?.let { diag ->
+            sb.appendLine()
+            sb.appendLine(diag.formatReport())
+        }
         sb.appendLine()
     }
     return sb.toString().trimEnd()

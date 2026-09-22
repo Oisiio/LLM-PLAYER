@@ -21,14 +21,16 @@ fun AgentSettingsDialog(
     initialThinkingBudget: Int,
     initialBenchmarkMode: Boolean = false,
     initialPrefixCacheEnabled: Boolean = true,
+    initialDiagnosticsEnabled: Boolean = false,
     onDismiss: () -> Unit,
-    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int, benchmarkMode: Boolean, prefixCacheEnabled: Boolean) -> Unit
+    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int, benchmarkMode: Boolean, prefixCacheEnabled: Boolean, diagnosticsEnabled: Boolean) -> Unit
 ) {
     var systemPrompt by remember { mutableStateOf(initialSystemPrompt) }
     var thinkingEnabled by remember { mutableStateOf(initialThinkingEnabled) }
     var thinkingBudget by remember { mutableIntStateOf(initialThinkingBudget) }
     var benchmarkMode by remember { mutableStateOf(initialBenchmarkMode) }
     var prefixCacheEnabled by remember { mutableStateOf(initialPrefixCacheEnabled) }
+    var diagnosticsEnabled by remember { mutableStateOf(initialDiagnosticsEnabled) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -219,12 +221,39 @@ fun AgentSettingsDialog(
                         modifier = Modifier.testTag("agent_settings_prefix_cache_switch")
                     )
                 }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Generation Diagnostics Section
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Generation Diagnostics (詳細診断)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (diagnosticsEnabled) "ON (decode/sampling詳細時間・Page Fault・CPUコアを計測)" else "OFF (診断オフ)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (diagnosticsEnabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = diagnosticsEnabled,
+                        onCheckedChange = { diagnosticsEnabled = it },
+                        modifier = Modifier.testTag("agent_settings_diagnostics_switch")
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(systemPrompt, thinkingEnabled, thinkingBudget, benchmarkMode, prefixCacheEnabled)
+                    onSave(systemPrompt, thinkingEnabled, thinkingBudget, benchmarkMode, prefixCacheEnabled, diagnosticsEnabled)
                     onDismiss()
                 },
                 modifier = Modifier.testTag("agent_settings_save_button")

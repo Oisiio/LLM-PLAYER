@@ -90,12 +90,27 @@ class AgentPreferencesTest {
     }
 
     @Test
+    fun testDiagnosticsEnabled_defaultsToFalseAndSaves() {
+        assertFalse(agentPreferences.isDiagnosticsEnabled)
+
+        agentPreferences.isDiagnosticsEnabled = true
+        assertTrue(agentPreferences.isDiagnosticsEnabled)
+        assertEquals(true, fakePrefs.getBoolean(AgentPreferences.KEY_DIAGNOSTICS_ENABLED, false))
+
+        agentPreferences.isDiagnosticsEnabled = false
+        assertFalse(agentPreferences.isDiagnosticsEnabled)
+        assertEquals(false, fakePrefs.getBoolean(AgentPreferences.KEY_DIAGNOSTICS_ENABLED, true))
+    }
+
+    @Test
     fun testResetAll_resetsBenchmarkMode() {
         agentPreferences.isBenchmarkMode = true
         agentPreferences.isPrefixCacheEnabled = false
+        agentPreferences.isDiagnosticsEnabled = true
         agentPreferences.resetAll()
         assertFalse(agentPreferences.isBenchmarkMode)
         assertTrue(agentPreferences.isPrefixCacheEnabled)
+        assertFalse(agentPreferences.isDiagnosticsEnabled)
     }
 
     @Test

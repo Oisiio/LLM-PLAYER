@@ -9,9 +9,11 @@ data class ToolCall(
 object ToolCallParser {
 
     private val TOOL_CALL_TAG_REGEX = Regex("<tool_call>([\\s\\S]*?)(?:</tool_call>|$)", RegexOption.IGNORE_CASE)
+    private val THINK_TAG_REGEX = Regex("<think>[\\s\\S]*?(?:</think>|$)", RegexOption.IGNORE_CASE)
 
     fun parse(llmOutput: String): ToolCall? {
-        val match = TOOL_CALL_TAG_REGEX.find(llmOutput) ?: return null
+        val contentWithoutThink = stripThinkingBlocks(llmOutput)
+        val match = TOOL_CALL_TAG_REGEX.find(contentWithoutThink) ?: return null
         val innerContent = match.groupValues[1].trim()
         if (innerContent.isBlank()) return null
 
@@ -25,6 +27,10 @@ object ToolCallParser {
 
         // 2. Try line / colon based parsing
         return tryParseTextFormat(cleaned, match.value)
+    }
+
+    private fun stripThinkingBlocks(text: String): String {
+        return text.replace(THINK_TAG_REGEX, "").trim()
     }
 
     private fun stripMarkdownCodeBlock(text: String): String {

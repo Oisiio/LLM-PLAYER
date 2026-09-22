@@ -80,6 +80,66 @@ Toolの実行結果を推測や暗算で置き換えないでください。
     }
 
     /**
+     * Builds the initial prompt for Step 1 in Structured Multi-turn KV State mode.
+     */
+    fun buildInitialPrompt(
+        userMessage: String,
+        tools: List<Tool>,
+        systemPrompt: String = DEFAULT_SYSTEM_PROMPT
+    ): String {
+        val sb = StringBuilder()
+        sb.append("[指示]\n")
+        sb.append(systemPrompt.trim()).append("\n\n")
+
+        sb.append("利用可能なツール一覧:\n")
+        for (tool in tools) {
+            sb.append("- ").append(tool.name).append(": ").append(tool.description).append("\n")
+            if (tool.parameters.isNotEmpty()) {
+                val paramsDesc = tool.parameters.joinToString(", ") { "${it.name} (${it.type}): ${it.description}" }
+                sb.append("  引数: ").append(paramsDesc).append("\n")
+            }
+        }
+        sb.append("\n")
+
+        sb.append("ツールを呼び出す場合は、以下の形式のみを出力してください:\n")
+        sb.append("<tool_call>\n")
+        sb.append("{\"name\": \"ツール名\", \"arguments\": {\"引数名\": \"値\"}}\n")
+        sb.append("</tool_call>\n\n")
+
+        sb.append("ツールの呼び出しが不要な場合（挨拶や一般的な会話など）、またはツール実行結果を受け取った後は、通常の文章でユーザーに最終回答を伝えてください。\n\n")
+
+        sb.append("[ユーザーの入力]\n")
+        sb.append(userMessage.trim()).append("\n\n")
+
+        sb.append("[アシスタントの回答]\n")
+        return sb.toString()
+    }
+
+    /**
+     * Builds the delta prompt for subsequent steps in Structured Multi-turn KV State mode.
+     * This prompt contains ONLY the new tool execution result to be appended to existing KV State.
+     */
+    fun buildToolDeltaPrompt(
+        toolName: String,
+        toolResult: ToolExecutionResult
+    ): String {
+        val sb = StringBuilder()
+        sb.append("\nツール実行結果:\n<tool_result>\n")
+        when (toolResult) {
+            is ToolExecutionResult.Success -> {
+                sb.append(buildToolResultJson(toolName, toolResult.output, null)).append("\n")
+            }
+            is ToolExecutionResult.Error -> {
+                sb.append(buildToolResultJson(toolName, null, toolResult.errorMessage)).append("\n")
+            }
+        }
+        sb.append("</tool_result>\n")
+        sb.append("\n上記の結果を踏まえて、ユーザーへの最終回答を作成してください。\n")
+        sb.append("[アシスタントの回答]\n")
+        return sb.toString()
+    }
+
+    /**
      * Escapes a string to be safely embedded inside a JSON string literal according to RFC 8259.
      */
     fun escapeJsonString(value: String): String {

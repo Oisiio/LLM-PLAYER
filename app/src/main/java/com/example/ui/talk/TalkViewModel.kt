@@ -11,6 +11,7 @@ import com.example.data.model.MessageRole
 import com.example.data.repository.CharacterViewMode
 import com.example.data.repository.TalkRepository
 import com.example.engine.PromptBuilder
+import com.example.agent.StepDiagnostics
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -113,6 +114,82 @@ interface LlmStreamRunner {
     )
 
     fun clearAgentPrefixCache() {}
+
+    fun clearAgentSession() {}
+
+    suspend fun runAgentSessionInit(
+        prompt: String,
+        temperature: Float,
+        topK: Int,
+        topP: Float,
+        minP: Float,
+        typicalP: Float,
+        repetitionPenalty: Float,
+        penaltyLastN: Int,
+        seed: Long,
+        enableThinking: Boolean,
+        thinkingBudget: Int,
+        sessionId: String,
+        enableDiagnostics: Boolean = false,
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)? = null,
+        onMetrics: ((TalkDebugMetrics) -> Unit)? = null,
+        onDiagnostics: ((StepDiagnostics) -> Unit)? = null
+    ): String = runStreamingInferenceForAgent(
+        prompt = prompt,
+        temperature = temperature,
+        topK = topK,
+        topP = topP,
+        minP = minP,
+        typicalP = typicalP,
+        repetitionPenalty = repetitionPenalty,
+        penaltyLastN = penaltyLastN,
+        seed = seed,
+        enableThinking = enableThinking,
+        thinkingBudget = thinkingBudget,
+        sessionId = sessionId,
+        enablePrefixCache = true,
+        onToken = onToken,
+        onTtft = onTtft,
+        onMetrics = onMetrics
+    )
+
+    suspend fun runAgentSessionAppend(
+        deltaPrompt: String,
+        temperature: Float,
+        topK: Int,
+        topP: Float,
+        minP: Float,
+        typicalP: Float,
+        repetitionPenalty: Float,
+        penaltyLastN: Int,
+        seed: Long,
+        enableThinking: Boolean,
+        thinkingBudget: Int,
+        sessionId: String,
+        enableDiagnostics: Boolean = false,
+        onToken: (String) -> Unit,
+        onTtft: ((Double) -> Unit)? = null,
+        onMetrics: ((TalkDebugMetrics) -> Unit)? = null,
+        onDiagnostics: ((StepDiagnostics) -> Unit)? = null
+    ): String = runStreamingInferenceForAgent(
+        prompt = deltaPrompt,
+        temperature = temperature,
+        topK = topK,
+        topP = topP,
+        minP = minP,
+        typicalP = typicalP,
+        repetitionPenalty = repetitionPenalty,
+        penaltyLastN = penaltyLastN,
+        seed = seed,
+        enableThinking = enableThinking,
+        thinkingBudget = thinkingBudget,
+        sessionId = sessionId,
+        enablePrefixCache = true,
+        onToken = onToken,
+        onTtft = onTtft,
+        onMetrics = onMetrics
+    )
 }
 
 class TalkViewModel(
