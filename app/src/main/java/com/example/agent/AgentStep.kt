@@ -43,7 +43,10 @@ data class AgentStep(
     val toolCall: ToolCall? = null,
     val toolResult: ToolExecutionResult? = null,
     val isFinal: Boolean = false,
-    val metrics: AgentStepMetrics? = null
+    val metrics: AgentStepMetrics? = null,
+    val thoughtText: String? = null,
+    val isThoughtPrefilled: Boolean = false,
+    val isThoughtCompleted: Boolean = false
 )
 
 sealed class AgentResult {

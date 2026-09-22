@@ -888,4 +888,115 @@ class AgentRunnerTest {
         assertEquals(500, summary.totalCachedTokens)
         assertEquals(600, summary.totalNewPromptTokens)
     }
+
+    @Test
+    fun testExtractThoughtInfo_step1ThinkingOn_withEndTag() {
+        val raw = "Thinking about the calculation...\n</think>\n答えは42です。"
+        val (thought, isPrefilled, isCompleted) = AgentRunner.extractThoughtInfo(
+            rawOutput = raw,
+            isFirstStep = true,
+            enableThinking = true
+        )
+        assertEquals("Thinking about the calculation...", thought)
+        assertTrue(isPrefilled)
+        assertTrue(isCompleted)
+    }
+
+    @Test
+    fun testExtractThoughtInfo_step1ThinkingOn_withoutEndTag() {
+        val raw = "Thinking about the calculation and ran out of budget..."
+        val (thought, isPrefilled, isCompleted) = AgentRunner.extractThoughtInfo(
+            rawOutput = raw,
+            isFirstStep = true,
+            enableThinking = true
+        )
+        assertEquals("Thinking about the calculation and ran out of budget...", thought)
+        assertTrue(isPrefilled)
+        assertFalse(isCompleted)
+    }
+
+    @Test
+    fun testExtractThoughtInfo_step2_withTags() {
+        val raw = "<think>\nStep 2 reasoning\n</think>\nFinal result"
+        val (thought, isPrefilled, isCompleted) = AgentRunner.extractThoughtInfo(
+            rawOutput = raw,
+            isFirstStep = false,
+            enableThinking = true
+        )
+        assertEquals("Step 2 reasoning", thought)
+        assertFalse(isPrefilled)
+        assertTrue(isCompleted)
+    }
+
+    @Test
+    fun testExtractThoughtInfo_thinkingOff() {
+        val raw = "Regular answer without thinking"
+        val (thought, isPrefilled, isCompleted) = AgentRunner.extractThoughtInfo(
+            rawOutput = raw,
+            isFirstStep = true,
+            enableThinking = false
+        )
+        assertNull(thought)
+        assertFalse(isPrefilled)
+        assertFalse(isCompleted)
+    }
+
+    @Test
+    fun testRunner_step1ThinkingOn_extractsThoughtAndCleansAnswer() = runBlocking {
+        val fakeLlm = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun clearAgentPrefixCache() {}
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String = ""
+
+            override suspend fun runStreamingInferenceForAgent(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int,
+                sessionId: String, enablePrefixCache: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                val tokens = listOf("Calcul", "ating...\n", "</think>\n", "答え", "は42", "です。")
+                tokens.forEach { onToken(it) }
+                return tokens.joinToString("")
+            }
+        }
+
+        val runner = AgentRunner(llmRunner = fakeLlm)
+        val thoughtUpdates = mutableListOf<Triple<String, Boolean, Boolean>>()
+
+        val result = runner.run(
+            userPrompt = "計算して",
+            enableThinking = true,
+            onThoughtUpdate = { thought, isPrefilled, isThinking ->
+                thoughtUpdates.add(Triple(thought, isPrefilled, isThinking))
+            }
+        )
+
+        assertTrue(result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals("答えは42です。", success.finalAnswer)
+        assertEquals(1, success.steps.size)
+
+        val step1 = success.steps[0]
+        assertEquals("Calculating...", step1.thoughtText)
+        assertTrue(step1.isThoughtPrefilled)
+        assertTrue(step1.isThoughtCompleted)
+
+        // Verify thought updates were dispatched
+        assertTrue(thoughtUpdates.isNotEmpty())
+        // Last update should have isThinking = false after </think>
+        val lastUpdate = thoughtUpdates.last()
+        assertEquals("Calculating...\n", lastUpdate.first)
+        assertTrue(lastUpdate.second) // isPrefilled
+        assertFalse(lastUpdate.third) // isThinking completed
+    }
 }

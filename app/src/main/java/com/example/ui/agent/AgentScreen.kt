@@ -1,5 +1,7 @@
 package com.example.ui.agent
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -10,6 +12,8 @@ import androidx.compose.material.icons.filled.Calculate
 import androidx.compose.material.icons.filled.CalendarToday
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.ExpandLess
+import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Psychology
@@ -20,6 +24,7 @@ import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -73,6 +78,9 @@ fun AgentScreen(
     var resultText by remember { mutableStateOf<String?>(null) }
     var benchmarkSummary by remember { mutableStateOf<AgentBenchmarkSummary?>(null) }
     var liveTokens by remember { mutableStateOf("") }
+    var liveThoughtText by remember { mutableStateOf("") }
+    var isLiveThoughtPrefilled by remember { mutableStateOf(false) }
+    var isLiveThinking by remember { mutableStateOf(false) }
     var isCopied by remember { mutableStateOf(false) }
 
     val presets = listOf(
@@ -243,6 +251,9 @@ fun AgentScreen(
                     steps = emptyList()
                     benchmarkSummary = null
                     liveTokens = ""
+                    liveThoughtText = ""
+                    isLiveThoughtPrefilled = false
+                    isLiveThinking = false
                     coroutineScope.launch {
                         try {
                             agentRunner.configureTools(
@@ -260,9 +271,17 @@ fun AgentScreen(
                                 onStepUpdate = { newStep ->
                                     steps = steps + newStep
                                     liveTokens = ""
+                                    liveThoughtText = ""
+                                    isLiveThoughtPrefilled = false
+                                    isLiveThinking = false
                                 },
                                 onToken = { token ->
                                     liveTokens += token
+                                },
+                                onThoughtUpdate = { thought, isPrefilled, isThinking ->
+                                    liveThoughtText = thought
+                                    isLiveThoughtPrefilled = isPrefilled
+                                    isLiveThinking = isThinking
                                 }
                             )
                             resultText = when (runResult) {
@@ -313,23 +332,105 @@ fun AgentScreen(
             }
         }
 
-        if ((isRunning || isCancelling) && liveTokens.isNotBlank()) {
+        if ((isRunning || isCancelling) && (liveTokens.isNotBlank() || isLiveThinking || liveThoughtText.isNotBlank())) {
             Card(
                 modifier = Modifier.fillMaxWidth(),
                 colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
             ) {
                 Column(Modifier.padding(12.dp)) {
-                    Text(
-                        text = if (isCancelling) "停止処理中..." else "推論中...",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = if (isCancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                    )
-                    Spacer(Modifier.height(4.dp))
-                    Text(
-                        text = liveTokens,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontFamily = FontFamily.Monospace
-                    )
+                    if (isLiveThinking || liveThoughtText.isNotBlank()) {
+                        Surface(
+                            shape = RoundedCornerShape(6.dp),
+                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            Column(Modifier.padding(8.dp)) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text(
+                                        text = "🧠 Thinking",
+                                        style = MaterialTheme.typography.labelMedium,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary
+                                    )
+                                    if (isLiveThoughtPrefilled) {
+                                        Surface(
+                                            shape = RoundedCornerShape(3.dp),
+                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f)
+                                        ) {
+                                            Text(
+                                                text = "[Prefill] <think>",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        }
+                                    } else {
+                                        Surface(
+                                            shape = RoundedCornerShape(3.dp),
+                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                                        ) {
+                                            Text(
+                                                text = "<think>",
+                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                                            )
+                                        }
+                                    }
+                                    Spacer(Modifier.weight(1f))
+                                    Text(
+                                        text = if (isLiveThinking) "思考中..." else "思考完了",
+                                        style = MaterialTheme.typography.labelSmall,
+                                        color = if (isLiveThinking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
+                                    )
+                                }
+
+                                if (liveThoughtText.isNotBlank()) {
+                                    Spacer(Modifier.height(4.dp))
+                                    Text(
+                                        text = liveThoughtText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                            }
+                        }
+
+                        val postThinkTokens = if (liveTokens.contains("</think>")) {
+                            liveTokens.substring(liveTokens.indexOf("</think>") + 8).trimStart('\n')
+                        } else ""
+
+                        if (postThinkTokens.isNotBlank()) {
+                            Spacer(Modifier.height(8.dp))
+                            Text(
+                                text = if (isCancelling) "停止処理中..." else "アクション / 回答生成中...",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = if (isCancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                text = postThinkTokens,
+                                style = MaterialTheme.typography.bodySmall,
+                                fontFamily = FontFamily.Monospace
+                            )
+                        }
+                    } else {
+                        Text(
+                            text = if (isCancelling) "停止処理中..." else "推論中...",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = if (isCancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.height(4.dp))
+                        Text(
+                            text = liveTokens,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontFamily = FontFamily.Monospace
+                        )
+                    }
                 }
             }
         }
@@ -485,6 +586,15 @@ fun AgentScreen(
                                     }
                                 }
                             }
+                        }
+
+                        // Thought block (collapsible)
+                        if (!step.thoughtText.isNullOrBlank()) {
+                            StepThoughtDisplay(
+                                thoughtText = step.thoughtText,
+                                isPrefilled = step.isThoughtPrefilled,
+                                isCompleted = step.isThoughtCompleted
+                            )
                         }
 
                         if (step.toolCall != null) {
@@ -742,4 +852,104 @@ private fun formatBenchmarkText(summary: AgentBenchmarkSummary): String {
         sb.appendLine()
     }
     return sb.toString().trimEnd()
+}
+
+@Composable
+private fun StepThoughtDisplay(
+    thoughtText: String,
+    isPrefilled: Boolean,
+    isCompleted: Boolean
+) {
+    var expanded by rememberSaveable { mutableStateOf(false) }
+
+    Surface(
+        shape = RoundedCornerShape(6.dp),
+        color = MaterialTheme.colorScheme.surface.copy(alpha = 0.8f),
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable { expanded = !expanded }
+    ) {
+        Column(modifier = Modifier.padding(8.dp)) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Text(
+                        text = "🧠 思考プロセス",
+                        style = MaterialTheme.typography.labelMedium,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    if (isPrefilled) {
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f)
+                        ) {
+                            Text(
+                                text = "[Prefill] <think>",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    } else {
+                        Surface(
+                            shape = RoundedCornerShape(3.dp),
+                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
+                        ) {
+                            Text(
+                                text = "<think>",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
+                                color = MaterialTheme.colorScheme.onSecondaryContainer
+                            )
+                        }
+                    }
+                }
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = if (expanded) "折りたたむ" else "表示する",
+                        style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.outline
+                    )
+                    Icon(
+                        imageVector = if (expanded) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = if (expanded) "思考プロセスを折りたたむ" else "思考プロセスを展開する",
+                        modifier = Modifier.size(18.dp),
+                        tint = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+
+            AnimatedVisibility(visible = expanded) {
+                Column(modifier = Modifier.padding(top = 6.dp)) {
+                    HorizontalDivider(
+                        color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.3f),
+                        modifier = Modifier.padding(bottom = 6.dp)
+                    )
+                    Text(
+                        text = buildString {
+                            if (isPrefilled) {
+                                append("<think>\n")
+                            }
+                            append(thoughtText)
+                            if (isCompleted) {
+                                append("\n</think>")
+                            }
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
 }

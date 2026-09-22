@@ -37,6 +37,36 @@ class AgentRunner(
 ) {
     companion object {
         const val DEFAULT_MAX_STEPS = 5
+
+        internal fun extractThoughtInfo(
+            rawOutput: String,
+            isFirstStep: Boolean,
+            enableThinking: Boolean
+        ): Triple<String?, Boolean, Boolean> {
+            if (isFirstStep && enableThinking) {
+                val endTagIdx = rawOutput.indexOf("</think>")
+                return if (endTagIdx != -1) {
+                    val thought = rawOutput.substring(0, endTagIdx).trim()
+                    Triple(thought.ifEmpty { null }, true, true)
+                } else {
+                    val thought = rawOutput.trim()
+                    Triple(thought.ifEmpty { null }, true, false)
+                }
+            } else {
+                val startTagIdx = rawOutput.indexOf("<think>")
+                val endTagIdx = rawOutput.indexOf("</think>")
+                if (startTagIdx != -1) {
+                    return if (endTagIdx != -1 && endTagIdx > startTagIdx) {
+                        val thought = rawOutput.substring(startTagIdx + 7, endTagIdx).trim()
+                        Triple(thought.ifEmpty { null }, false, true)
+                    } else {
+                        val thought = rawOutput.substring(startTagIdx + 7).trim()
+                        Triple(thought.ifEmpty { null }, false, false)
+                    }
+                }
+                return Triple(null, false, false)
+            }
+        }
     }
 
     private val _state = MutableStateFlow(AgentState.IDLE)
@@ -87,7 +117,8 @@ class AgentRunner(
         thinkingBudget: Int = 1024,
         enableDiagnostics: Boolean = false,
         onStepUpdate: ((AgentStep) -> Unit)? = null,
-        onToken: ((String) -> Unit)? = null
+        onToken: ((String) -> Unit)? = null,
+        onThoughtUpdate: ((thoughtText: String, isPrefilled: Boolean, isThinking: Boolean) -> Unit)? = null
     ): AgentResult {
         if (!_state.compareAndSet(AgentState.IDLE, AgentState.RUNNING)) {
             logger.log("[Agent] error=Already running or cancelling")
@@ -142,10 +173,71 @@ class AgentRunner(
                     logger.log("[Agent] step=$stepNum")
 
                     val isFirstStep = stepNum == 1
+                    var isThinking = isFirstStep && enableThinking
+                    val isThoughtPrefilled = isThinking
+                    if (isThinking) {
+                        onThoughtUpdate?.invoke("", true, true)
+                    } else {
+                        onThoughtUpdate?.invoke("", false, false)
+                    }
+
                     val prompt: String
                     val textAccumulator = StringBuilder()
                     var stepDebugMetrics: TalkDebugMetrics? = null
                     var stepDiagnostics: StepDiagnostics? = null
+
+                    val handleToken: (String) -> Unit = { token ->
+                        if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
+                            textAccumulator.append(token)
+                            onToken?.invoke(token)
+
+                            if (onThoughtUpdate != null) {
+                                val currentText = textAccumulator.toString()
+                                if (isThinking) {
+                                    val endIdx = currentText.indexOf("</think>")
+                                    if (endIdx != -1) {
+                                        isThinking = false
+                                        val thought = if (isThoughtPrefilled) {
+                                            currentText.substring(0, endIdx)
+                                        } else {
+                                            val startIdx = currentText.indexOf("<think>")
+                                            if (startIdx != -1 && startIdx < endIdx) {
+                                                currentText.substring(startIdx + 7, endIdx)
+                                            } else {
+                                                currentText.substring(0, endIdx)
+                                            }
+                                        }
+                                        onThoughtUpdate.invoke(thought, isThoughtPrefilled, false)
+                                    } else {
+                                        val thought = if (isThoughtPrefilled) {
+                                            currentText
+                                        } else {
+                                            val startIdx = currentText.indexOf("<think>")
+                                            if (startIdx != -1) {
+                                                currentText.substring(startIdx + 7)
+                                            } else {
+                                                currentText
+                                            }
+                                        }
+                                        onThoughtUpdate.invoke(thought, isThoughtPrefilled, true)
+                                    }
+                                } else if (!isThoughtPrefilled) {
+                                    val startIdx = currentText.indexOf("<think>")
+                                    val endIdx = currentText.indexOf("</think>")
+                                    if (startIdx != -1) {
+                                        if (endIdx != -1 && endIdx > startIdx) {
+                                            val thought = currentText.substring(startIdx + 7, endIdx)
+                                            onThoughtUpdate.invoke(thought, false, false)
+                                        } else {
+                                            isThinking = true
+                                            val thought = currentText.substring(startIdx + 7)
+                                            onThoughtUpdate.invoke(thought, false, true)
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
 
                     val rawOutput = if (isFirstStep) {
                         prompt = AgentPromptBuilder.buildInitialPrompt(
@@ -176,12 +268,7 @@ class AgentRunner(
                             thinkingBudget = thinkingBudget,
                             sessionId = sessionId,
                             enableDiagnostics = enableDiagnostics,
-                            onToken = { token ->
-                                if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
-                                    textAccumulator.append(token)
-                                    onToken?.invoke(token)
-                                }
-                            },
+                            onToken = handleToken,
                             onMetrics = { metrics ->
                                 stepDebugMetrics = metrics
                             },
@@ -218,12 +305,7 @@ class AgentRunner(
                             thinkingBudget = thinkingBudget,
                             sessionId = sessionId,
                             enableDiagnostics = enableDiagnostics,
-                            onToken = { token ->
-                                if (!isCancelRequested.get() && _state.value == AgentState.RUNNING && currentCoroutineJob.isActive) {
-                                    textAccumulator.append(token)
-                                    onToken?.invoke(token)
-                                }
-                            },
+                            onToken = handleToken,
                             onMetrics = { metrics ->
                                 stepDebugMetrics = metrics
                             },
@@ -252,7 +334,18 @@ class AgentRunner(
                     if (toolCall == null) {
                         // No tool call requested -> Final Answer reached
                         logger.log("[Agent] final")
-                        val cleanAnswer = ToolCallParser.removeToolCallTags(rawOutput).trim()
+                        val (thoughtText, thoughtPrefilled, thoughtCompleted) = extractThoughtInfo(
+                            rawOutput = rawOutput,
+                            isFirstStep = isFirstStep,
+                            enableThinking = enableThinking
+                        )
+
+                        val rawAnswerWithoutPrefillThink = if (isFirstStep && enableThinking && rawOutput.contains("</think>")) {
+                            rawOutput.substring(rawOutput.indexOf("</think>") + 8)
+                        } else {
+                            rawOutput
+                        }
+                        val cleanAnswer = ToolCallParser.removeToolCallTags(rawAnswerWithoutPrefillThink).trim()
                         val stepEndNano = System.nanoTime()
                         val stepTotalTimeMs = (stepEndNano - stepStartNano) / 1_000_000.0
 
@@ -285,7 +378,10 @@ class AgentRunner(
                             toolCall = null,
                             toolResult = null,
                             isFinal = true,
-                            metrics = finalMetrics
+                            metrics = finalMetrics,
+                            thoughtText = thoughtText,
+                            isThoughtPrefilled = thoughtPrefilled,
+                            isThoughtCompleted = thoughtCompleted
                         )
                         steps.add(finalStep)
                         onStepUpdate?.invoke(finalStep)
@@ -382,6 +478,12 @@ class AgentRunner(
                         diagnostics = stepDiagnostics
                     )
 
+                    val (thoughtText, thoughtPrefilled, thoughtCompleted) = extractThoughtInfo(
+                        rawOutput = rawOutput,
+                        isFirstStep = isFirstStep,
+                        enableThinking = enableThinking
+                    )
+
                     val currentStep = AgentStep(
                         stepNumber = stepNum,
                         prompt = prompt,
@@ -389,7 +491,10 @@ class AgentRunner(
                         toolCall = toolCall,
                         toolResult = toolResult,
                         isFinal = false,
-                        metrics = stepMetrics
+                        metrics = stepMetrics,
+                        thoughtText = thoughtText,
+                        isThoughtPrefilled = thoughtPrefilled,
+                        isThoughtCompleted = thoughtCompleted
                     )
                     steps.add(currentStep)
                     onStepUpdate?.invoke(currentStep)
