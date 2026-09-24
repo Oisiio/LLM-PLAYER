@@ -476,7 +476,11 @@ fun AgentScreen(
 
                         IconButton(
                             onClick = {
-                                val text = formatBenchmarkText(summary)
+                                val text = formatBenchmarkText(
+                                    summary = summary,
+                                    steps = steps,
+                                    finalAnswer = resultText
+                                )
                                 clipboardManager.setText(AnnotatedString(text))
                                 isCopied = true
                                 coroutineScope.launch {
@@ -490,7 +494,7 @@ fun AgentScreen(
                         ) {
                             Icon(
                                 imageVector = if (isCopied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                                contentDescription = "メトリクスをコピー",
+                                contentDescription = "Benchmark結果をコピー",
                                 tint = MaterialTheme.colorScheme.onTertiaryContainer,
                                 modifier = Modifier.size(16.dp)
                             )
@@ -816,8 +820,13 @@ private fun formatMs(ms: Double): String {
     }
 }
 
-private fun formatBenchmarkText(summary: AgentBenchmarkSummary): String {
+private fun formatBenchmarkText(
+    summary: AgentBenchmarkSummary,
+    steps: List<AgentStep>,
+    finalAnswer: String?
+): String {
     val sb = StringBuilder()
+
     sb.appendLine("=== Agent Benchmark Results ===")
     sb.appendLine("Total Time: ${String.format(Locale.US, "%.1f", summary.totalTimeMs)} ms (${String.format(Locale.US, "%.2f", summary.totalTimeMs / 1000.0)} s)")
     sb.appendLine("Steps: ${summary.stepCount}")
@@ -829,8 +838,9 @@ private fun formatBenchmarkText(summary: AgentBenchmarkSummary): String {
     sb.appendLine("Total Generated Tokens: ${summary.totalGenTokens}")
     sb.appendLine("Total Tool Time: ${String.format(Locale.US, "%.2f", summary.totalToolTimeMs)} ms")
     sb.appendLine()
+
     summary.stepMetrics.forEach { step ->
-        sb.appendLine("--- Step ${step.stepNumber} ---")
+        sb.appendLine("--- Step ${step.stepNumber} Metrics ---")
         if (step.cachedTokens > 0) {
             sb.appendLine("• Prompt: ${step.promptTokens} tok (Cached: ${step.cachedTokens}, New: ${step.newPromptTokens}) (${String.format(Locale.US, "%.1f", step.promptTimeMs)} ms)")
         } else {
@@ -851,6 +861,48 @@ private fun formatBenchmarkText(summary: AgentBenchmarkSummary): String {
         }
         sb.appendLine()
     }
+
+    sb.appendLine("=== Agent Response Logs ===")
+    if (steps.isEmpty()) {
+        sb.appendLine("(No step logs)")
+    } else {
+        steps.forEach { step ->
+            sb.appendLine()
+            sb.appendLine("--- Step ${step.stepNumber} ---")
+            sb.appendLine("[Prompt]")
+            sb.appendLine(step.prompt.ifBlank { "(empty)" })
+            sb.appendLine()
+            sb.appendLine("[Raw LLM Output]")
+            sb.appendLine(step.rawLlmOutput.ifBlank { "(empty)" })
+
+            step.thoughtText?.takeIf { it.isNotBlank() }?.let { thought ->
+                sb.appendLine()
+                sb.appendLine("[Parsed Thought]")
+                sb.appendLine(thought)
+                sb.appendLine("[Thought Prefilled: ${step.isThoughtPrefilled}]")
+                sb.appendLine("[Thought Completed: ${step.isThoughtCompleted}]")
+            }
+
+            step.toolCall?.let { toolCall ->
+                sb.appendLine()
+                sb.appendLine("[Tool Call]")
+                sb.appendLine("Tool: ${toolCall.toolName}")
+                sb.appendLine("Arguments: ${toolCall.arguments}")
+            }
+
+            step.toolResult?.let { toolResult ->
+                sb.appendLine()
+                sb.appendLine("[Tool Result]")
+                sb.appendLine("Success: ${toolResult.isSuccess}")
+                sb.appendLine(toolResult.text)
+            }
+        }
+    }
+
+    sb.appendLine()
+    sb.appendLine("=== Final Answer ===")
+    sb.appendLine(finalAnswer?.ifBlank { "(empty)" } ?: "(none)")
+
     return sb.toString().trimEnd()
 }
 
