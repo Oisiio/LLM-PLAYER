@@ -843,7 +843,12 @@ private fun formatBenchmarkText(
         } else {
             sb.appendLine("• Prompt: ${step.promptTokens} tok (${String.format(Locale.US, "%.1f", step.promptTimeMs)} ms)")
         }
-        val analysis = analyzeGeneration(step)
+        val stepLog = steps.firstOrNull { it.stepNumber == step.stepNumber }
+        val analysis = stepLog?.let { analyzeGeneration(it) } ?: GenerationAnalysis(
+            "UNKNOWN",
+            "算出不可",
+            "算出不可"
+        )
         sb.appendLine("• Generated: ${step.genTokens} tok (${String.format(Locale.US, "%.1f", step.genTimeMs)} ms)")
         sb.appendLine("• Stop Reason: ${analysis.stopReason}")
         sb.appendLine("• Thinking Tokens: ${analysis.thinkingTokens}")
