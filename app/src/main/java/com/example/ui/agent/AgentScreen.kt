@@ -81,7 +81,7 @@ fun AgentScreen(
     var liveThoughtText by remember { mutableStateOf("") }
     var isLiveThoughtPrefilled by remember { mutableStateOf(false) }
     var isLiveThinking by remember { mutableStateOf(false) }
-    var isCopied by remember { mutableStateOf(false) }
+    var copiedSection by remember { mutableStateOf<String?>(null) }
 
     val presets = listOf(
         "12345 * 678 を計算して",
@@ -474,31 +474,26 @@ fun AgentScreen(
                             )
                         }
 
-                        IconButton(
-                            onClick = {
-                                val text = formatBenchmarkText(
-                                    summary = summary,
-                                    steps = steps,
-                                    finalAnswer = resultText
-                                )
-                                clipboardManager.setText(AnnotatedString(text))
-                                isCopied = true
-                                coroutineScope.launch {
-                                    delay(2000)
-                                    isCopied = false
-                                }
-                            },
-                            modifier = Modifier
-                                .size(32.dp)
-                                .testTag("agent_benchmark_copy_button")
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp)
                         ) {
-                            Icon(
-                                imageVector = if (isCopied) Icons.Filled.Check else Icons.Filled.ContentCopy,
-                                contentDescription = "Benchmark結果をコピー",
-                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.size(16.dp)
-                            )
-                        }
+                            BenchmarkCopyButton("全部", copiedSection == "all", "agent_benchmark_copy_button") {
+                                clipboardManager.setText(AnnotatedString(formatBenchmarkText(summary, steps, resultText, thinkingBudget)))
+                                copiedSection = "all"
+                                coroutineScope.launch { delay(2000); copiedSection = null }
+                            }
+                            BenchmarkCopyButton("推論", copiedSection == "thinking", "agent_benchmark_copy_thinking_button") {
+                                clipboardManager.setText(AnnotatedString(formatThinkingCopyText(steps)))
+                                copiedSection = "thinking"
+                                coroutineScope.launch { delay(2000); copiedSection = null }
+                            }
+                            BenchmarkCopyButton("本文", copiedSection == "answer", "agent_benchmark_copy_answer_button") {
+                                clipboardManager.setText(AnnotatedString(formatAnswerCopyText(steps, resultText)))
+                                copiedSection = "answer"
+                                coroutineScope.launch { delay(2000); copiedSection = null }
+                            }
+                        }                        }
                     }
 
                     HorizontalDivider(color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.2f))
@@ -823,7 +818,8 @@ private fun formatMs(ms: Double): String {
 private fun formatBenchmarkText(
     summary: AgentBenchmarkSummary,
     steps: List<AgentStep>,
-    finalAnswer: String?
+    finalAnswer: String?,
+    reasoningBudget: Int
 ): String {
     val sb = StringBuilder()
 
@@ -846,7 +842,12 @@ private fun formatBenchmarkText(
         } else {
             sb.appendLine("• Prompt: ${step.promptTokens} tok (${String.format(Locale.US, "%.1f", step.promptTimeMs)} ms)")
         }
+        val analysis = analyzeGeneration(step)
         sb.appendLine("• Generated: ${step.genTokens} tok (${String.format(Locale.US, "%.1f", step.genTimeMs)} ms)")
+        sb.appendLine("• Stop Reason: ${analysis.stopReason}")
+        sb.appendLine("• Thinking Tokens: ${analysis.thinkingTokens}")
+        sb.appendLine("• Answer Tokens: ${analysis.answerTokens}")
+        sb.appendLine("• Reasoning Budget: ${if (reasoningBudget > 0) reasoningBudget else "OFF"}")
         sb.appendLine("• Speed: ${String.format(Locale.US, "%.2f", step.speedTokPerSec)} tok/s")
         sb.appendLine("• TTFT: ${String.format(Locale.US, "%.1f", step.ttftMs)} ms")
         if (step.toolName != null) {
@@ -906,6 +907,67 @@ private fun formatBenchmarkText(
     return sb.toString().trimEnd()
 }
 
+private data class GenerationAnalysis(
+    val stopReason: String,
+    val thinkingTokens: String,
+    val answerTokens: String
+)
+
+private fun analyzeGeneration(step: AgentStep): GenerationAnalysis {
+    val raw = step.rawLlmOutput
+    val endIdx = raw.indexOf("</think>")
+    val completed = step.isThoughtCompleted && endIdx >= 0
+    return when {
+        !completed && !step.thoughtText.isNullOrBlank() -> GenerationAnalysis(
+            if ((step.metrics?.genTokens ?: 0) > 0) "MAX_TOKENS (推定)" else "NO_GENERATION",
+            step.metrics?.genTokens?.toString() ?: "-",
+            "0"
+        )
+        step.toolCall != null -> GenerationAnalysis("TOOL_CALL", "算出不可", "算出不可")
+        completed -> GenerationAnalysis("FINAL", "算出不可", "算出不可")
+        else -> GenerationAnalysis("FINAL", "0", step.metrics?.genTokens?.toString() ?: "-")
+    }
+}
+
+private fun formatThinkingCopyText(steps: List<AgentStep>): String = buildString {
+    appendLine("=== Agent Thinking Logs ===")
+    steps.forEach {
+        appendLine()
+        appendLine("--- Step ${it.stepNumber} ---")
+        appendLine(it.thoughtText?.ifBlank { "(empty)" } ?: "(no thinking)")
+    }
+}.trimEnd()
+
+private fun formatAnswerCopyText(steps: List<AgentStep>, finalAnswer: String?): String = buildString {
+    appendLine("=== Agent Answer Logs ===")
+    steps.forEach {
+        val raw = it.rawLlmOutput
+        val end = raw.indexOf("</think>")
+        val answer = if (end >= 0) {
+            ToolCallParser.removeToolCallTags(raw.substring(end + 8)).trim()
+        } else if (it.thoughtText.isNullOrBlank()) {
+            ToolCallParser.removeToolCallTags(raw).trim()
+        } else ""
+        if (answer.isNotBlank()) {
+            appendLine()
+            appendLine("--- Step ${it.stepNumber} ---")
+            appendLine(answer)
+        }
+    }
+    appendLine()
+    appendLine("=== Final Answer ===")
+    appendLine(finalAnswer?.ifBlank { "(empty)" } ?: "(none)")
+}.trimEnd()
+
+@Composable
+private fun BenchmarkCopyButton(label: String, selected: Boolean, testTag: String, onClick: () -> Unit) {
+    AssistChip(
+        onClick = onClick,
+        label = { Text(if (selected) "✓ $label" else label, fontSize = 10.sp) },
+        leadingIcon = { Icon(if (selected) Icons.Filled.Check else Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp)) },
+        modifier = Modifier.height(30.dp).testTag(testTag)
+    )
+}
 @Composable
 private fun StepThoughtDisplay(
     thoughtText: String,
