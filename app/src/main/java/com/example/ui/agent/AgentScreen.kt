@@ -44,6 +44,7 @@ import com.example.agent.AgentState
 import com.example.agent.AgentStep
 import com.example.agent.AgentStepMetrics
 import com.example.agent.StepDiagnostics
+import com.example.agent.ToolCallParser
 import com.example.agent.ToolExecutionResult
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
