@@ -494,10 +494,7 @@ fun AgentScreen(
                                 copiedSection = "answer"
                                 coroutineScope.launch { delay(2000); copiedSection = null }
                             }
-                        }                        }
-                    }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.2f))
+                        }\n                    }\n\n                    HorizontalDivider(color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.2f))
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
