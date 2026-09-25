@@ -44,27 +44,27 @@ class AgentRunner(
             isFirstStep: Boolean,
             enableThinking: Boolean
         ): Triple<String?, Boolean, Boolean> {
-            if (isFirstStep && enableThinking) {
-                val endTagIdx = rawOutput.indexOf("</think>")
-                return if (endTagIdx != -1) {
-                    val thought = rawOutput.substring(0, endTagIdx).trim()
-                    Triple(thought.ifEmpty { null }, true, true)
+            if (!enableThinking) {
+                return Triple(null, false, false)
+            }
+            val startTagIdx = rawOutput.indexOf("<think>")
+            val endTagIdx = rawOutput.indexOf("</think>")
+            if (startTagIdx != -1) {
+                return if (endTagIdx != -1 && endTagIdx > startTagIdx) {
+                    val thought = rawOutput.substring(startTagIdx + 7, endTagIdx).trim()
+                    Triple(thought.ifEmpty { null }, false, true)
                 } else {
-                    val thought = rawOutput.trim()
-                    Triple(thought.ifEmpty { null }, true, false)
+                    val thought = rawOutput.substring(startTagIdx + 7).trim()
+                    Triple(thought.ifEmpty { null }, false, false)
                 }
+            } else if (endTagIdx != -1) {
+                // Thought was prefilled (e.g. by chat template or assistant generation prompt)
+                val thought = rawOutput.substring(0, endTagIdx).trim()
+                return Triple(thought.ifEmpty { null }, true, true)
+            } else if (isFirstStep) {
+                val thought = rawOutput.trim()
+                return Triple(thought.ifEmpty { null }, true, false)
             } else {
-                val startTagIdx = rawOutput.indexOf("<think>")
-                val endTagIdx = rawOutput.indexOf("</think>")
-                if (startTagIdx != -1) {
-                    return if (endTagIdx != -1 && endTagIdx > startTagIdx) {
-                        val thought = rawOutput.substring(startTagIdx + 7, endTagIdx).trim()
-                        Triple(thought.ifEmpty { null }, false, true)
-                    } else {
-                        val thought = rawOutput.substring(startTagIdx + 7).trim()
-                        Triple(thought.ifEmpty { null }, false, false)
-                    }
-                }
                 return Triple(null, false, false)
             }
         }
@@ -185,7 +185,7 @@ class AgentRunner(
                     }
                     val stepThinkingBudget = if (stepEnableThinking) thinkingBudget else 0
 
-                    var isThinking = isFirstStep && stepEnableThinking
+                    var isThinking = stepEnableThinking
                     val isThoughtPrefilled = isThinking
                     if (isThinking) {
                         onThoughtUpdate?.invoke("", true, true)
@@ -252,11 +252,12 @@ class AgentRunner(
                     }
 
                     val rawOutput = if (isFirstStep) {
-                        prompt = AgentPromptBuilder.buildInitialPrompt(
+                        val initialPrompt = AgentPromptBuilder.buildInitialPrompt(
                             userMessage = userPrompt,
                             tools = toolRegistry.getAllTools(),
                             systemPrompt = systemPrompt
                         )
+                        prompt = AgentPromptBuilder.buildMessagesJson(listOf("user" to initialPrompt))
 
                         // 2. Cooperative check before LLM generation
                         ensureActive()
@@ -289,11 +290,22 @@ class AgentRunner(
                             }
                         )
                     } else {
-                        val lastStep = steps.last()
-                        prompt = AgentPromptBuilder.buildToolDeltaPrompt(
-                            toolName = lastStep.toolCall?.toolName ?: "unknown",
-                            toolResult = lastStep.toolResult ?: ToolExecutionResult.Error("No tool result found from previous step")
+                        val messages = mutableListOf<Pair<String, String>>()
+                        val initialPrompt = AgentPromptBuilder.buildInitialPrompt(
+                            userMessage = userPrompt,
+                            tools = toolRegistry.getAllTools(),
+                            systemPrompt = systemPrompt
                         )
+                        messages.add("user" to initialPrompt)
+                        for (prevStep in steps) {
+                            messages.add("assistant" to prevStep.rawLlmOutput)
+                            val toolResultStr = AgentPromptBuilder.buildToolResultContent(
+                                toolName = prevStep.toolCall?.toolName ?: "unknown",
+                                toolResult = prevStep.toolResult ?: ToolExecutionResult.Error("No tool result found from previous step")
+                            )
+                            messages.add("user" to toolResultStr)
+                        }
+                        prompt = AgentPromptBuilder.buildMessagesJson(messages)
 
                         // 2. Cooperative check before LLM generation
                         ensureActive()
@@ -352,7 +364,7 @@ class AgentRunner(
                             enableThinking = stepEnableThinking
                         )
 
-                        val rawAnswerWithoutPrefillThink = if (isFirstStep && stepEnableThinking && rawOutput.contains("</think>")) {
+                        val rawAnswerWithoutPrefillThink = if (stepEnableThinking && rawOutput.contains("</think>")) {
                             rawOutput.substring(rawOutput.indexOf("</think>") + 8)
                         } else {
                             rawOutput

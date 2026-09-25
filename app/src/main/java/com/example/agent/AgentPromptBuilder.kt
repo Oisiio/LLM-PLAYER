@@ -109,9 +109,7 @@ Toolの実行結果を推測や暗算で置き換えないでください。
         sb.append("ツールの呼び出しが不要な場合（挨拶や一般的な会話など）、またはツール実行結果を受け取った後は、通常の文章でユーザーに最終回答を伝えてください。\n\n")
 
         sb.append("[ユーザーの入力]\n")
-        sb.append(userMessage.trim()).append("\n\n")
-
-        sb.append("[アシスタントの回答]\n")
+        sb.append(userMessage.trim()).append("\n")
         return sb.toString()
     }
 
@@ -134,8 +132,45 @@ Toolの実行結果を推測や暗算で置き換えないでください。
             }
         }
         sb.append("</tool_result>\n")
-        sb.append("\n上記の結果を踏まえて、ユーザーへの最終回答を作成してください。\n")
-        sb.append("[アシスタントの回答]\n")
+        sb.append("\n上記の結果を踏まえて、ユーザーへの最終回答を作成してください。すでに実行したツールを同じ引数で再実行しないでください。\n")
+        return sb.toString()
+    }
+
+    /**
+     * Builds the tool result content for a user turn in multi-turn Chat Template format.
+     */
+    fun buildToolResultContent(
+        toolName: String,
+        toolResult: ToolExecutionResult
+    ): String {
+        val sb = StringBuilder()
+        sb.append("ツール実行結果:\n<tool_result>\n")
+        when (toolResult) {
+            is ToolExecutionResult.Success -> {
+                sb.append(buildToolResultJson(toolName, toolResult.output, null)).append("\n")
+            }
+            is ToolExecutionResult.Error -> {
+                sb.append(buildToolResultJson(toolName, null, toolResult.errorMessage)).append("\n")
+            }
+        }
+        sb.append("</tool_result>\n\n")
+        sb.append("上記の結果を踏まえて、ユーザーへの回答を作成してください。すでに実行したツールを同じ引数で再実行しないでください。必要なToolがあれば続けて呼び出し、不要であれば最終回答を伝えてください。")
+        return sb.toString()
+    }
+
+    /**
+     * Serializes a list of (role, content) pairs into a JSON array for multi-turn Chat Template application.
+     */
+    fun buildMessagesJson(messages: List<Pair<String, String>>): String {
+        val sb = StringBuilder()
+        sb.append("[")
+        messages.forEachIndexed { index, (role, content) ->
+            if (index > 0) sb.append(",")
+            sb.append("{\"role\":\"").append(escapeJsonString(role))
+            sb.append("\",\"content\":\"").append(escapeJsonString(content))
+            sb.append("\"}")
+        }
+        sb.append("]")
         return sb.toString()
     }
 

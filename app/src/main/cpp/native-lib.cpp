@@ -123,7 +123,7 @@ void unload_model_locked() {
     if (g_model != nullptr) { llama_model_free(g_model); g_model = nullptr; }
 }
 
-bool format_chat_prompt(const std::string & user_prompt,
+bool format_chat_prompt(const std::string & prompt_input,
                         std::string & formatted_prompt,
                         std::string & template_name,
                         std::vector<std::string> & additional_stops,
@@ -137,9 +137,38 @@ bool format_chat_prompt(const std::string & user_prompt,
     }
     if (!g_chat_templates) return false;
 
+    std::vector<common_chat_msg> messages;
+    bool is_json_messages = false;
+    if (prompt_input.size() >= 2 && prompt_input.front() == '[' && prompt_input.back() == ']') {
+        common_json j = common_json::parse_no_throw(prompt_input);
+        if (!j.is_discarded() && j.is_array()) {
+            for (size_t i = 0; i < j.size(); ++i) {
+                const auto & item = j[i];
+                if (item.contains("role") && item.contains("content")) {
+                    common_chat_msg msg;
+                    msg.role = item.value("role", "");
+                    msg.content = item.value("content", "");
+                    messages.push_back(msg);
+                }
+            }
+            is_json_messages = !messages.empty();
+        }
+    }
+
+    if (!is_json_messages) {
+        common_chat_msg msg;
+        msg.role = "user";
+        msg.content = prompt_input;
+        messages.push_back(msg);
+    }
+
     const char * raw_tmpl = llama_model_chat_template(g_model, nullptr);
     if ((raw_tmpl == nullptr || raw_tmpl[0] == '\0') && !common_chat_templates_was_explicit(g_chat_templates.get())) {
-        formatted_prompt = user_prompt;
+        formatted_prompt.clear();
+        for (const auto & m : messages) {
+            formatted_prompt += "[" + m.role + "]\n" + m.content + "\n\n";
+        }
+        formatted_prompt += "[assistant]\n";
         template_name = "NONE";
         additional_stops.clear();
         return true;
@@ -147,10 +176,7 @@ bool format_chat_prompt(const std::string & user_prompt,
 
     try {
         common_chat_templates_inputs inputs;
-        common_chat_msg msg;
-        msg.role = "user";
-        msg.content = user_prompt;
-        inputs.messages.push_back(msg);
+        inputs.messages = messages;
         inputs.add_generation_prompt = true;
         inputs.use_jinja = true;
         inputs.enable_thinking = enable_thinking;
@@ -935,8 +961,13 @@ std::string generate_sampling_agent_locked(
             if (add_stop.empty()) continue;
             const size_t pos = generated_text.find(add_stop);
             if (pos != std::string::npos) {
-                generated_text.erase(pos);
-                stop_reason = "STOP_SEQUENCE";
+                if (add_stop == "</tool_call>") {
+                    generated_text.erase(pos + add_stop.size());
+                    stop_reason = "TOOL_CALL";
+                } else {
+                    generated_text.erase(pos);
+                    stop_reason = "STOP_SEQUENCE";
+                }
                 stopped_by_additional = true;
                 break;
             }
@@ -1030,7 +1061,7 @@ std::string generate_sampling_agent_session_locked(
     std::set<int> observed_cpus;
 
     std::string prompt_text = prompt_input;
-    if (min_p <= 0.0f && g_default_min_p > 0.0f) min_p = g_default_min_p;
+    if (min_p < 0.0f) min_p = g_default_min_p;
     float typical_p = typical_p_override < 0.0f ? g_default_typical_p : typical_p_override;
     parse_prompt_sampling_tags(prompt_text, min_p, typical_p);
 
@@ -1059,6 +1090,9 @@ std::string generate_sampling_agent_session_locked(
         if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops, enable_thinking, &thinking_start_tag, &thinking_end_tags)) {
             g_agent_session.clear(g_context);
             return "ERROR: chat_template_apply failed";
+        }
+        if (std::find(additional_stops.begin(), additional_stops.end(), "</tool_call>") == additional_stops.end()) {
+            additional_stops.push_back("</tool_call>");
         }
 
         if (!tokenize_prompt(formatted_prompt, prefill_tokens)) {
@@ -1099,7 +1133,7 @@ std::string generate_sampling_agent_session_locked(
         g_agent_session.is_active = true;
 
     } else {
-        // Step 2+: Delta Prompt (Tool Result)
+        // Step 2+: Multi-turn chat template formatting with LCP KV Cache reuse
         if (!g_agent_session.is_active || g_agent_session.session_id != session_id || g_agent_session.n_past <= 0) {
             __android_log_print(ANDROID_LOG_WARN, kLogTag, "Agent Session mismatch or inactive: expected=%s, current=%s, is_active=%d",
                                 session_id.c_str(), g_agent_session.session_id.c_str(), g_agent_session.is_active);
@@ -1107,29 +1141,52 @@ std::string generate_sampling_agent_session_locked(
             return "ERROR: Agent session not found or inactive";
         }
 
-        // Tokenize delta prompt directly
-        if (!tokenize_prompt(prompt_text, prefill_tokens)) {
+        std::string formatted_prompt;
+        std::string chat_template;
+        if (!format_chat_prompt(prompt_text, formatted_prompt, chat_template, additional_stops, enable_thinking, &thinking_start_tag, &thinking_end_tags)) {
             g_agent_session.clear(g_context);
-            return "ERROR: llama_tokenize failed for delta prompt";
+            return "ERROR: chat_template_apply failed for delta prompt";
+        }
+        if (std::find(additional_stops.begin(), additional_stops.end(), "</tool_call>") == additional_stops.end()) {
+            additional_stops.push_back("</tool_call>");
+        }
+
+        if (!tokenize_prompt(formatted_prompt, prefill_tokens)) {
+            g_agent_session.clear(g_context);
+            return "ERROR: llama_tokenize failed for formatted prompt";
         }
 
         if (prefill_tokens.empty()) {
             g_agent_session.clear(g_context);
-            return "ERROR: delta tokens empty";
+            return "ERROR: tokens empty";
         }
 
-        if (g_agent_session.n_past + static_cast<int32_t>(prefill_tokens.size()) >= g_n_ctx) {
-            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Agent Context Overflow: n_past=%d + delta=%zu >= n_ctx=%d",
-                                g_agent_session.n_past, prefill_tokens.size(), g_n_ctx);
+        if (static_cast<int32_t>(prefill_tokens.size()) >= g_n_ctx) {
+            __android_log_print(ANDROID_LOG_ERROR, kLogTag, "Agent Context Overflow: tokens=%zu >= n_ctx=%d",
+                                prefill_tokens.size(), g_n_ctx);
             g_agent_session.clear(g_context);
             return "ERROR: context overflow";
         }
 
-        cached_tokens = g_agent_session.n_past;
-        new_tokens_count = static_cast<int32_t>(prefill_tokens.size());
+        // LCP matching with existing KV Cache tokens
+        size_t lcp = 0;
+        const size_t max_cmp = std::min(g_agent_session.tokens.size(), prefill_tokens.size());
+        while (lcp < max_cmp && g_agent_session.tokens[lcp] == prefill_tokens[lcp]) {
+            lcp++;
+        }
 
-        // Decode delta tokens from current n_past
-        for (size_t offset = 0; offset < prefill_tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
+        if (lcp < g_agent_session.tokens.size()) {
+            llama_memory_t mem = llama_get_memory(g_context);
+            llama_memory_seq_rm(mem, 0, static_cast<llama_pos>(lcp), -1);
+            g_agent_session.tokens.resize(lcp);
+            g_agent_session.n_past = static_cast<int32_t>(lcp);
+        }
+
+        cached_tokens = static_cast<int32_t>(lcp);
+        new_tokens_count = static_cast<int32_t>(prefill_tokens.size() - lcp);
+
+        // Decode only non-cached tokens starting from lcp
+        for (size_t offset = lcp; offset < prefill_tokens.size(); offset += static_cast<size_t>(kBatchSize)) {
             if (cancel_flag != nullptr && cancel_flag->load()) {
                 g_agent_session.clear(g_context);
                 return "ERROR: Cancelled before delta processing";
@@ -1137,7 +1194,7 @@ std::string generate_sampling_agent_session_locked(
             const size_t chunk_size = std::min(prefill_tokens.size() - offset, static_cast<size_t>(kBatchSize));
             std::vector<llama_pos> chunk_pos(chunk_size);
             for (size_t i = 0; i < chunk_size; ++i) {
-                chunk_pos[i] = static_cast<llama_pos>(g_agent_session.n_past + offset + i);
+                chunk_pos[i] = static_cast<llama_pos>(offset + i);
             }
             llama_batch chunk_batch = llama_batch_get_one(prefill_tokens.data() + offset, static_cast<int32_t>(chunk_size));
             chunk_batch.pos = chunk_pos.data();
@@ -1147,8 +1204,8 @@ std::string generate_sampling_agent_session_locked(
             }
         }
 
-        g_agent_session.n_past += static_cast<int32_t>(prefill_tokens.size());
-        g_agent_session.tokens.insert(g_agent_session.tokens.end(), prefill_tokens.begin(), prefill_tokens.end());
+        g_agent_session.n_past = static_cast<int32_t>(prefill_tokens.size());
+        g_agent_session.tokens = prefill_tokens;
     }
 
     const auto t_prompt_end = std::chrono::steady_clock::now();
@@ -1331,8 +1388,13 @@ std::string generate_sampling_agent_session_locked(
             if (add_stop.empty()) continue;
             const size_t pos = generated_text.find(add_stop);
             if (pos != std::string::npos) {
-                generated_text.erase(pos);
-                stop_reason = "STOP_SEQUENCE";
+                if (add_stop == "</tool_call>") {
+                    generated_text.erase(pos + add_stop.size());
+                    stop_reason = "TOOL_CALL";
+                } else {
+                    generated_text.erase(pos);
+                    stop_reason = "STOP_SEQUENCE";
+                }
                 stopped_by_additional = true;
                 break;
             }
