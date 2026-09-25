@@ -937,6 +937,9 @@ private data class GenerationAnalysis(
 )
 
 private fun analyzeGeneration(step: AgentStep): GenerationAnalysis {
+    if (step.metrics?.stopReason == "MAX_STEPS") {
+        return GenerationAnalysis("MAX_STEPS", "算出不可", "算出不可")
+    }
     val raw = step.rawLlmOutput
     val endIdx = raw.indexOf("</think>")
     val completed = step.isThoughtCompleted && endIdx >= 0

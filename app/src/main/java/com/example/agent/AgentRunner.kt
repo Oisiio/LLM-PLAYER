@@ -36,6 +36,7 @@ class AgentRunner(
     private val logger: AgentLogger = AgentLogger.Default
 ) {
     companion object {
+        const val MAX_AGENT_STEPS = 5
         const val DEFAULT_MAX_STEPS = 5
 
         internal fun extractThoughtInfo(
@@ -160,7 +161,9 @@ class AgentRunner(
                     return@coroutineScope AgentResult.Error(err, emptyList())
                 }
 
-                for (stepNum in 1..maxSteps) {
+                val effectiveMaxSteps = minOf(maxSteps, MAX_AGENT_STEPS)
+
+                for (stepNum in 1..effectiveMaxSteps) {
                     val stepStartNano = System.nanoTime()
 
                     // 1. Cooperative check before step
@@ -471,6 +474,9 @@ class AgentRunner(
                     val cTokens = stepDebugMetrics?.cachedTokens ?: 0
                     val nTokens = stepDebugMetrics?.newPromptTokens ?: (pTokens - cTokens)
 
+                    val isLastAllowedStep = stepNum >= effectiveMaxSteps
+                    val stepStopReason = if (isLastAllowedStep) "MAX_STEPS" else "TOOL_CALL"
+
                     val stepMetrics = AgentStepMetrics(
                         stepNumber = stepNum,
                         promptTokens = pTokens,
@@ -488,7 +494,7 @@ class AgentRunner(
                         newPromptTokens = nTokens,
                         diagnostics = stepDiagnostics,
                         reasoningBudget = stepThinkingBudget,
-                        stopReason = "TOOL_CALL"
+                        stopReason = stepStopReason
                     )
 
                     val (thoughtText, thoughtPrefilled, thoughtCompleted) = extractThoughtInfo(

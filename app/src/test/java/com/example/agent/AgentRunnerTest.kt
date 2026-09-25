@@ -295,7 +295,130 @@ class AgentRunnerTest {
         val maxResult = result as AgentResult.MaxStepsReached
         assertEquals("Agent stopped: maximum step limit reached", maxResult.finalAnswer)
         assertEquals(3, maxResult.steps.size)
+        assertEquals("MAX_STEPS", maxResult.steps.last().metrics?.stopReason)
         assertTrue(logs.contains("[Agent] stop"))
+    }
+
+    @Test
+    fun testMaxSteps_normalCompletionWithin5Steps() = runBlocking {
+        var callCount = 0
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                callCount++
+                return when (callCount) {
+                    1 -> "<tool_call>calculator: 2 + 3</tool_call>"
+                    2 -> "計算結果は 5 です。"
+                    else -> "Unexpected step $callCount"
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run("2 + 3 を計算して")
+        assertTrue("Expected Success result", result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals("計算結果は 5 です。", success.finalAnswer)
+        assertEquals(2, success.steps.size)
+        assertEquals(2, callCount)
+        assertEquals("TOOL_CALL", success.steps[0].metrics?.stopReason)
+        assertEquals("EOG", success.steps[1].metrics?.stopReason)
+        assertTrue(success.steps[1].isFinal)
+    }
+
+    @Test
+    fun testMaxSteps_stopsAtStep5AndNeverExecutesStep6() = runBlocking {
+        var callCount = 0
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                callCount++
+                return "<tool_call>calculator: $callCount + 1</tool_call>"
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        // Pass maxSteps = 10, but hard limit MAX_AGENT_STEPS = 5 must restrict to 5
+        val result = agent.run("無限計算タスク", maxSteps = 10)
+        assertTrue("Expected MaxStepsReached result", result is AgentResult.MaxStepsReached)
+        val maxResult = result as AgentResult.MaxStepsReached
+        assertEquals(5, maxResult.steps.size)
+        assertEquals(5, callCount) // Step 6 must NEVER be executed
+        assertNotNull(maxResult.benchmarkSummary)
+        assertEquals(5, maxResult.benchmarkSummary?.stepCount)
+
+        // Steps 1..4 should have TOOL_CALL stopReason, Step 5 should have MAX_STEPS stopReason
+        for (i in 0..3) {
+            assertEquals("TOOL_CALL", maxResult.steps[i].metrics?.stopReason)
+        }
+        assertEquals("MAX_STEPS", maxResult.steps[4].metrics?.stopReason)
+    }
+
+    @Test
+    fun testMaxSteps_unregisteredToolError_doesNotInfiniteLoopAndStopsAtStep5() = runBlocking {
+        var callCount = 0
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                callCount++
+                return "<tool_call>non_existent_tool: arg_$callCount</tool_call>"
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run("未登録ツール呼び出しループテスト", maxSteps = 8)
+        assertTrue("Expected MaxStepsReached result", result is AgentResult.MaxStepsReached)
+        val maxResult = result as AgentResult.MaxStepsReached
+        assertEquals("Agent stopped: maximum step limit reached", maxResult.finalAnswer)
+        assertEquals(5, maxResult.steps.size)
+        assertEquals(5, callCount) // No infinite loop, stops strictly at 5
+
+        // Verify Step 5 captured the unregistered tool call and error result
+        val step5 = maxResult.steps[4]
+        assertEquals(5, step5.stepNumber)
+        assertNotNull(step5.toolCall)
+        assertEquals("non_existent_tool", step5.toolCall?.toolName)
+        assertTrue(step5.toolResult is ToolExecutionResult.Error)
+        val err = step5.toolResult as ToolExecutionResult.Error
+        assertTrue(err.errorMessage.contains("Tool 'non_existent_tool' is not registered"))
+        assertEquals("MAX_STEPS", step5.metrics?.stopReason)
+
+        // Benchmark summary is fully populated
+        assertNotNull(maxResult.benchmarkSummary)
+        assertEquals(5, maxResult.benchmarkSummary?.stepCount)
     }
 
     @Test

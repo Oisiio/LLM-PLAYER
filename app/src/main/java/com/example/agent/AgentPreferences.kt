@@ -102,6 +102,6 @@ class AgentPreferences(
         const val KEY_DIAGNOSTICS_ENABLED = "agent_diagnostics_enabled"
         const val KEY_STEP1_THINKING_DISABLED = "agent_step1_thinking_disabled"
         const val DEFAULT_THINKING_BUDGET = 1024
-        const val DEFAULT_MAX_STEPS = 8
+        const val DEFAULT_MAX_STEPS = 5
     }
 }
