@@ -115,6 +115,7 @@ class AgentRunner(
         systemPrompt: String = AgentPromptBuilder.DEFAULT_SYSTEM_PROMPT,
         enableThinking: Boolean = true,
         thinkingBudget: Int = 1024,
+        disableStep1Thinking: Boolean = false,
         enableDiagnostics: Boolean = false,
         onStepUpdate: ((AgentStep) -> Unit)? = null,
         onToken: ((String) -> Unit)? = null,
@@ -173,7 +174,15 @@ class AgentRunner(
                     logger.log("[Agent] step=$stepNum")
 
                     val isFirstStep = stepNum == 1
-                    var isThinking = isFirstStep && enableThinking
+                    val hasAvailableTools = toolRegistry.getAllTools().isNotEmpty()
+                    val stepEnableThinking = if (isFirstStep && disableStep1Thinking && hasAvailableTools) {
+                        false
+                    } else {
+                        enableThinking
+                    }
+                    val stepThinkingBudget = if (stepEnableThinking) thinkingBudget else 0
+
+                    var isThinking = isFirstStep && stepEnableThinking
                     val isThoughtPrefilled = isThinking
                     if (isThinking) {
                         onThoughtUpdate?.invoke("", true, true)
@@ -264,8 +273,8 @@ class AgentRunner(
                             repetitionPenalty = samplingConfig.repetitionPenalty,
                             penaltyLastN = samplingConfig.penaltyLastN,
                             seed = samplingConfig.seed,
-                            enableThinking = enableThinking,
-                            thinkingBudget = thinkingBudget,
+                            enableThinking = stepEnableThinking,
+                            thinkingBudget = stepThinkingBudget,
                             sessionId = sessionId,
                             enableDiagnostics = enableDiagnostics,
                             onToken = handleToken,
@@ -301,8 +310,8 @@ class AgentRunner(
                             repetitionPenalty = samplingConfig.repetitionPenalty,
                             penaltyLastN = samplingConfig.penaltyLastN,
                             seed = samplingConfig.seed,
-                            enableThinking = enableThinking,
-                            thinkingBudget = thinkingBudget,
+                            enableThinking = stepEnableThinking,
+                            thinkingBudget = stepThinkingBudget,
                             sessionId = sessionId,
                             enableDiagnostics = enableDiagnostics,
                             onToken = handleToken,
@@ -337,10 +346,10 @@ class AgentRunner(
                         val (thoughtText, thoughtPrefilled, thoughtCompleted) = extractThoughtInfo(
                             rawOutput = rawOutput,
                             isFirstStep = isFirstStep,
-                            enableThinking = enableThinking
+                            enableThinking = stepEnableThinking
                         )
 
-                        val rawAnswerWithoutPrefillThink = if (isFirstStep && enableThinking && rawOutput.contains("</think>")) {
+                        val rawAnswerWithoutPrefillThink = if (isFirstStep && stepEnableThinking && rawOutput.contains("</think>")) {
                             rawOutput.substring(rawOutput.indexOf("</think>") + 8)
                         } else {
                             rawOutput
@@ -368,7 +377,9 @@ class AgentRunner(
                             stepTotalTimeMs = stepTotalTimeMs,
                             cachedTokens = cTokens,
                             newPromptTokens = nTokens,
-                            diagnostics = stepDiagnostics
+                            diagnostics = stepDiagnostics,
+                            reasoningBudget = stepThinkingBudget,
+                            stopReason = "EOG"
                         )
 
                         val finalStep = AgentStep(
@@ -475,13 +486,15 @@ class AgentRunner(
                         stepTotalTimeMs = stepTotalTimeMs,
                         cachedTokens = cTokens,
                         newPromptTokens = nTokens,
-                        diagnostics = stepDiagnostics
+                        diagnostics = stepDiagnostics,
+                        reasoningBudget = stepThinkingBudget,
+                        stopReason = "TOOL_CALL"
                     )
 
                     val (thoughtText, thoughtPrefilled, thoughtCompleted) = extractThoughtInfo(
                         rawOutput = rawOutput,
                         isFirstStep = isFirstStep,
-                        enableThinking = enableThinking
+                        enableThinking = stepEnableThinking
                     )
 
                     val currentStep = AgentStep(

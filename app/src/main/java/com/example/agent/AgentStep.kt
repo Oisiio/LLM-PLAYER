@@ -21,7 +21,9 @@ data class AgentStepMetrics(
     val stepTotalTimeMs: Double = 0.0,
     val cachedTokens: Int = 0,
     val newPromptTokens: Int = promptTokens,
-    val diagnostics: StepDiagnostics? = null
+    val diagnostics: StepDiagnostics? = null,
+    val reasoningBudget: Int = 0,
+    val stopReason: String = "EOG"
 )
 
 data class AgentBenchmarkSummary(

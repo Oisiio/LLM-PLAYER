@@ -107,10 +107,25 @@ class AgentPreferencesTest {
         agentPreferences.isBenchmarkMode = true
         agentPreferences.isPrefixCacheEnabled = false
         agentPreferences.isDiagnosticsEnabled = true
+        agentPreferences.isStep1ThinkingDisabled = false
         agentPreferences.resetAll()
         assertFalse(agentPreferences.isBenchmarkMode)
         assertTrue(agentPreferences.isPrefixCacheEnabled)
         assertFalse(agentPreferences.isDiagnosticsEnabled)
+        assertTrue(agentPreferences.isStep1ThinkingDisabled)
+    }
+
+    @Test
+    fun testStep1ThinkingDisabled_defaultsToTrueAndSaves() {
+        assertTrue(agentPreferences.isStep1ThinkingDisabled)
+
+        agentPreferences.isStep1ThinkingDisabled = false
+        assertFalse(agentPreferences.isStep1ThinkingDisabled)
+        assertEquals(false, fakePrefs.getBoolean(AgentPreferences.KEY_STEP1_THINKING_DISABLED, true))
+
+        agentPreferences.isStep1ThinkingDisabled = true
+        assertTrue(agentPreferences.isStep1ThinkingDisabled)
+        assertEquals(true, fakePrefs.getBoolean(AgentPreferences.KEY_STEP1_THINKING_DISABLED, false))
     }
 
     @Test

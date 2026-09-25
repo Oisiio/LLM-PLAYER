@@ -65,6 +65,12 @@ class AgentPreferences(
             prefs.edit().putBoolean(KEY_DIAGNOSTICS_ENABLED, value).apply()
         }
 
+    var isStep1ThinkingDisabled: Boolean
+        get() = prefs.getBoolean(KEY_STEP1_THINKING_DISABLED, true)
+        set(value) {
+            prefs.edit().putBoolean(KEY_STEP1_THINKING_DISABLED, value).apply()
+        }
+
     fun resetSystemPrompt(): String {
         val defaultVal = AgentPromptBuilder.DEFAULT_SYSTEM_PROMPT
         systemPrompt = defaultVal
@@ -81,6 +87,7 @@ class AgentPreferences(
         isBenchmarkMode = false
         isPrefixCacheEnabled = true
         isDiagnosticsEnabled = false
+        isStep1ThinkingDisabled = true
     }
 
     companion object {
@@ -93,6 +100,7 @@ class AgentPreferences(
         const val KEY_BENCHMARK_MODE = "agent_benchmark_mode"
         const val KEY_PREFIX_CACHE_ENABLED = "agent_prefix_cache_enabled"
         const val KEY_DIAGNOSTICS_ENABLED = "agent_diagnostics_enabled"
+        const val KEY_STEP1_THINKING_DISABLED = "agent_step1_thinking_disabled"
         const val DEFAULT_THINKING_BUDGET = 1024
         const val DEFAULT_MAX_STEPS = 8
     }

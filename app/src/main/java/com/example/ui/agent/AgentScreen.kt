@@ -68,6 +68,7 @@ fun AgentScreen(
     var isBenchmarkMode by remember { mutableStateOf(agentPreferences.isBenchmarkMode) }
     var isPrefixCacheEnabled by remember { mutableStateOf(agentPreferences.isPrefixCacheEnabled) }
     var isDiagnosticsEnabled by remember { mutableStateOf(agentPreferences.isDiagnosticsEnabled) }
+    var isStep1ThinkingDisabled by remember { mutableStateOf(agentPreferences.isStep1ThinkingDisabled) }
     var showSettingsDialog by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
@@ -268,6 +269,7 @@ fun AgentScreen(
                                 systemPrompt = systemPrompt,
                                 enableThinking = isThinkingEnabled,
                                 thinkingBudget = thinkingBudget,
+                                disableStep1Thinking = isStep1ThinkingDisabled,
                                 enableDiagnostics = isDiagnosticsEnabled,
                                 onStepUpdate = { newStep ->
                                     steps = steps + newStep
@@ -669,20 +671,23 @@ fun AgentScreen(
             initialBenchmarkMode = isBenchmarkMode,
             initialPrefixCacheEnabled = isPrefixCacheEnabled,
             initialDiagnosticsEnabled = isDiagnosticsEnabled,
+            initialStep1ThinkingDisabled = isStep1ThinkingDisabled,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newPrompt, newThinking, newBudget, newBenchmarkMode, newPrefixCache, newDiagnostics ->
+            onSave = { newPrompt, newThinking, newBudget, newBenchmarkMode, newPrefixCache, newDiagnostics, newStep1ThinkingDisabled ->
                 agentPreferences.systemPrompt = newPrompt
                 agentPreferences.isThinkingEnabled = newThinking
                 agentPreferences.thinkingBudget = newBudget
                 agentPreferences.isBenchmarkMode = newBenchmarkMode
                 agentPreferences.isPrefixCacheEnabled = newPrefixCache
                 agentPreferences.isDiagnosticsEnabled = newDiagnostics
+                agentPreferences.isStep1ThinkingDisabled = newStep1ThinkingDisabled
                 systemPrompt = newPrompt
                 isThinkingEnabled = newThinking
                 thinkingBudget = newBudget
                 isBenchmarkMode = newBenchmarkMode
                 isPrefixCacheEnabled = newPrefixCache
                 isDiagnosticsEnabled = newDiagnostics
+                isStep1ThinkingDisabled = newStep1ThinkingDisabled
             }
         )
     }
@@ -774,6 +779,11 @@ private fun StepMetricsDisplay(metrics: AgentStepMetrics) {
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace
             )
+            Text(
+                text = "• Reasoning Budget: ${if (metrics.reasoningBudget == 0) "OFF" else "${metrics.reasoningBudget} tok"}",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace
+            )
             val toolInfo = if (metrics.toolName != null) {
                 "${formatMs(metrics.toolExecutionTimeMs)} ms (${metrics.toolName})"
             } else {
@@ -781,6 +791,11 @@ private fun StepMetricsDisplay(metrics: AgentStepMetrics) {
             }
             Text(
                 text = "• Tool: $toolInfo",
+                style = MaterialTheme.typography.bodySmall,
+                fontFamily = FontFamily.Monospace
+            )
+            Text(
+                text = "• Stop Reason: ${metrics.stopReason}",
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace
             )
@@ -856,11 +871,13 @@ private fun formatBenchmarkText(
         sb.appendLine("• Reasoning Budget: ${if (reasoningBudget > 0) reasoningBudget else "OFF"}")
         sb.appendLine("• Speed: ${String.format(Locale.US, "%.2f", step.speedTokPerSec)} tok/s")
         sb.appendLine("• TTFT: ${String.format(Locale.US, "%.1f", step.ttftMs)} ms")
+        sb.appendLine("• Reasoning Budget: ${if (step.reasoningBudget == 0) "OFF" else "${step.reasoningBudget} tok"}")
         if (step.toolName != null) {
             sb.appendLine("• Tool: ${String.format(Locale.US, "%.2f", step.toolExecutionTimeMs)} ms (${step.toolName})")
         } else {
             sb.appendLine("• Tool: -")
         }
+        sb.appendLine("• Stop Reason: ${step.stopReason}")
         sb.appendLine("• Step Total: ${String.format(Locale.US, "%.1f", step.stepTotalTimeMs)} ms")
         step.diagnostics?.let { diag ->
             sb.appendLine()

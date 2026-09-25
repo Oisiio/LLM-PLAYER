@@ -22,8 +22,9 @@ fun AgentSettingsDialog(
     initialBenchmarkMode: Boolean = false,
     initialPrefixCacheEnabled: Boolean = true,
     initialDiagnosticsEnabled: Boolean = false,
+    initialStep1ThinkingDisabled: Boolean = true,
     onDismiss: () -> Unit,
-    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int, benchmarkMode: Boolean, prefixCacheEnabled: Boolean, diagnosticsEnabled: Boolean) -> Unit
+    onSave: (systemPrompt: String, thinkingEnabled: Boolean, thinkingBudget: Int, benchmarkMode: Boolean, prefixCacheEnabled: Boolean, diagnosticsEnabled: Boolean, step1ThinkingDisabled: Boolean) -> Unit
 ) {
     var systemPrompt by remember { mutableStateOf(initialSystemPrompt) }
     var thinkingEnabled by remember { mutableStateOf(initialThinkingEnabled) }
@@ -31,6 +32,7 @@ fun AgentSettingsDialog(
     var benchmarkMode by remember { mutableStateOf(initialBenchmarkMode) }
     var prefixCacheEnabled by remember { mutableStateOf(initialPrefixCacheEnabled) }
     var diagnosticsEnabled by remember { mutableStateOf(initialDiagnosticsEnabled) }
+    var step1ThinkingDisabled by remember { mutableStateOf(initialStep1ThinkingDisabled) }
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -248,12 +250,39 @@ fun AgentSettingsDialog(
                         modifier = Modifier.testTag("agent_settings_diagnostics_switch")
                     )
                 }
+
+                HorizontalDivider(color = MaterialTheme.colorScheme.outlineVariant)
+
+                // Step 1 Thinking OFF (Experiment Mode)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Step 1 Thinking OFF (実験モード)",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold
+                        )
+                        Text(
+                            text = if (step1ThinkingDisabled) "ON (Tool呼び出し時にThinkingをOFFにし、Tool Callを即時出力。Tool実行後の最終回答時はThinking有効)" else "OFF (Step 1でもThinkingを通常実行)",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (step1ThinkingDisabled) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                    }
+                    Switch(
+                        checked = step1ThinkingDisabled,
+                        onCheckedChange = { step1ThinkingDisabled = it },
+                        modifier = Modifier.testTag("agent_settings_step1_thinking_switch")
+                    )
+                }
             }
         },
         confirmButton = {
             Button(
                 onClick = {
-                    onSave(systemPrompt, thinkingEnabled, thinkingBudget, benchmarkMode, prefixCacheEnabled, diagnosticsEnabled)
+                    onSave(systemPrompt, thinkingEnabled, thinkingBudget, benchmarkMode, prefixCacheEnabled, diagnosticsEnabled, step1ThinkingDisabled)
                     onDismiss()
                 },
                 modifier = Modifier.testTag("agent_settings_save_button")

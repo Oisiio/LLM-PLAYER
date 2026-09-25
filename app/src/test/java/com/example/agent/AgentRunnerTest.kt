@@ -999,4 +999,279 @@ class AgentRunnerTest {
         assertTrue(lastUpdate.second) // isPrefilled
         assertFalse(lastUpdate.third) // isThinking completed
     }
+
+    @Test
+    fun testStep1ThinkingDisabled_step1HasThinkingOff_step2HasThinkingOn() = runBlocking {
+        val capturedCalls = mutableListOf<Pair<Boolean, Int>>() // Pair<enableThinking, thinkingBudget>
+
+        val fakeLlm = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String = ""
+
+            override suspend fun runAgentSessionInit(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int, sessionId: String, enableDiagnostics: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?,
+                onDiagnostics: ((StepDiagnostics) -> Unit)?
+            ): String {
+                capturedCalls.add(Pair(enableThinking, thinkingBudget))
+                // Step 1: emit a tool call immediately without thinking
+                val toolCallJson = """
+                    <tool_call>
+                    {"name": "datetime", "arguments": {"action": "today"}}
+                    </tool_call>
+                """.trimIndent()
+                onToken(toolCallJson)
+                return toolCallJson
+            }
+
+            override suspend fun runAgentSessionAppend(
+                deltaPrompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int, sessionId: String, enableDiagnostics: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?,
+                onDiagnostics: ((StepDiagnostics) -> Unit)?
+            ): String {
+                capturedCalls.add(Pair(enableThinking, thinkingBudget))
+                // Step 2: final answer with thinking enabled
+                val response = "今日は2026年9月24日です。"
+                onToken(response)
+                return response
+            }
+        }
+
+        val runner = AgentRunner(
+            llmRunner = fakeLlm,
+            toolRegistry = ToolRegistry(listOf(DateTimeTool()))
+        )
+
+        val result = runner.run(
+            userPrompt = "今日は何日？",
+            enableThinking = true,
+            thinkingBudget = 1024,
+            disableStep1Thinking = true
+        )
+
+        assertTrue(result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals("今日は2026年9月24日です。", success.finalAnswer)
+        assertEquals(2, success.steps.size)
+
+        // Verify captured calls: Step 1 had enableThinking=false, Step 2 had enableThinking=true
+        assertEquals(2, capturedCalls.size)
+        // Step 1: Thinking OFF
+        assertEquals(false, capturedCalls[0].first)
+        assertEquals(0, capturedCalls[0].second)
+        // Step 2: Thinking ON (restored to original enableThinking=true, budget=1024)
+        assertEquals(true, capturedCalls[1].first)
+        assertEquals(1024, capturedCalls[1].second)
+
+        // Verify metrics
+        val step1Metrics = success.steps[0].metrics
+        assertNotNull(step1Metrics)
+        assertEquals(0, step1Metrics!!.reasoningBudget)
+        assertEquals("TOOL_CALL", step1Metrics.stopReason)
+        assertEquals("datetime", step1Metrics.toolName)
+
+        val step2Metrics = success.steps[1].metrics
+        assertNotNull(step2Metrics)
+        assertEquals(1024, step2Metrics!!.reasoningBudget)
+        assertEquals("EOG", step2Metrics.stopReason)
+        assertNull(step2Metrics.toolName)
+    }
+
+    @Test
+    fun testStep1ThinkingDisabled_whenNoToolsAvailable_thinkingRemainsEnabled() = runBlocking {
+        var capturedEnableThinking: Boolean? = null
+
+        val fakeLlm = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String = ""
+
+            override suspend fun runAgentSessionInit(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int, sessionId: String, enableDiagnostics: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?,
+                onDiagnostics: ((StepDiagnostics) -> Unit)?
+            ): String {
+                capturedEnableThinking = enableThinking
+                return "こんにちは！"
+            }
+        }
+
+        // Empty tool registry
+        val runner = AgentRunner(
+            llmRunner = fakeLlm,
+            toolRegistry = ToolRegistry(emptyList())
+        )
+
+        val result = runner.run(
+            userPrompt = "こんにちは",
+            enableThinking = true,
+            disableStep1Thinking = true // Requested, but no tools available
+        )
+
+        assertTrue(result is AgentResult.Success)
+        // Since no tools are registered, thinking should remain enabled (not disabled)
+        assertEquals(true, capturedEnableThinking)
+    }
+
+    @Test
+    fun testChristmasSavingsScenario_withStep1ThinkingDisabled_benchmarkMetricsComplete() = runBlocking {
+        val capturedStepParams = mutableListOf<Pair<Boolean, Int>>()
+
+        val fakeLlm = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String = ""
+
+            private var stepCount = 0
+
+            override suspend fun runAgentSessionInit(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int, sessionId: String, enableDiagnostics: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?,
+                onDiagnostics: ((StepDiagnostics) -> Unit)?
+            ): String {
+                stepCount++
+                capturedStepParams.add(Pair(enableThinking, thinkingBudget))
+                onMetrics?.invoke(TalkDebugMetrics(
+                    ttftMs = 120.0, promptTokens = 520, genTokens = 35,
+                    promptTimeMs = 120.0, genTimeMs = 800.0, totalTimeMs = 920.0,
+                    speedTokPerSec = 43.75
+                ))
+                // Step 1: datetime tool call with Thinking OFF
+                val out = """<tool_call>{"name": "datetime", "arguments": {"action": "today"}}</tool_call>"""
+                onToken(out)
+                return out
+            }
+
+            override suspend fun runAgentSessionAppend(
+                deltaPrompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                thinkingBudget: Int, sessionId: String, enableDiagnostics: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?,
+                onDiagnostics: ((StepDiagnostics) -> Unit)?
+            ): String {
+                stepCount++
+                capturedStepParams.add(Pair(enableThinking, thinkingBudget))
+                if (stepCount == 2) {
+                    onMetrics?.invoke(TalkDebugMetrics(
+                        ttftMs = 45.0, promptTokens = 580, genTokens = 40,
+                        promptTimeMs = 45.0, genTimeMs = 900.0, totalTimeMs = 945.0,
+                        speedTokPerSec = 44.44
+                    ))
+                    // Step 2: calculator tool call with Thinking ON
+                    val out = """<tool_call>{"name": "calculator", "arguments": {"expression": "92 * 500"}}</tool_call>"""
+                    onToken(out)
+                    return out
+                } else {
+                    onMetrics?.invoke(TalkDebugMetrics(
+                        ttftMs = 50.0, promptTokens = 650, genTokens = 120,
+                        promptTimeMs = 50.0, genTimeMs = 2500.0, totalTimeMs = 2550.0,
+                        speedTokPerSec = 48.0
+                    ))
+                    // Step 3: final answer
+                    val out = "今日（9月24日）からクリスマス（12月25日）まではあと92日です。1日500円ずつ貯金すると、合計で46,000円貯まります！"
+                    onToken(out)
+                    return out
+                }
+            }
+        }
+
+        val runner = AgentRunner(
+            llmRunner = fakeLlm,
+            toolRegistry = ToolRegistry(listOf(DateTimeTool(), CalculatorTool()))
+        )
+
+        val result = runner.run(
+            userPrompt = "今日からクリスマスまでの日数を計算して、1日500円貯金したらいくらになる？",
+            enableThinking = true,
+            thinkingBudget = 1024,
+            disableStep1Thinking = true
+        )
+
+        assertTrue(result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals(3, success.steps.size)
+        assertTrue(success.finalAnswer.contains("46,000円"))
+
+        // Verify Thinking parameters per step:
+        // Step 1: Thinking OFF
+        assertEquals(false, capturedStepParams[0].first)
+        assertEquals(0, capturedStepParams[0].second)
+        // Step 2: Thinking ON
+        assertEquals(true, capturedStepParams[1].first)
+        assertEquals(1024, capturedStepParams[1].second)
+        // Step 3: Thinking ON
+        assertEquals(true, capturedStepParams[2].first)
+        assertEquals(1024, capturedStepParams[2].second)
+
+        // Verify Benchmark Summary & Metrics for each step:
+        val summary = success.benchmarkSummary
+        assertNotNull(summary)
+        assertEquals(3, summary!!.stepCount)
+
+        // Step 1 Metrics
+        val s1 = summary.stepMetrics[0]
+        assertEquals(1, s1.stepNumber)
+        assertEquals(35, s1.genTokens)
+        assertEquals(0, s1.reasoningBudget) // Reasoning Budget OFF
+        assertEquals("datetime", s1.toolName)
+        assertTrue(s1.toolExecutionTimeMs > 0.0 || s1.toolName != null)
+        assertEquals("TOOL_CALL", s1.stopReason)
+        assertEquals(120.0, s1.ttftMs, 0.01)
+        assertTrue(s1.stepTotalTimeMs > 0.0)
+
+        // Step 2 Metrics
+        val s2 = summary.stepMetrics[1]
+        assertEquals(2, s2.stepNumber)
+        assertEquals(40, s2.genTokens)
+        assertEquals(1024, s2.reasoningBudget) // Reasoning Budget 1024
+        assertEquals("calculator", s2.toolName)
+        assertEquals("TOOL_CALL", s2.stopReason)
+        assertEquals(45.0, s2.ttftMs, 0.01)
+
+        // Step 3 Metrics
+        val s3 = summary.stepMetrics[2]
+        assertEquals(3, s3.stepNumber)
+        assertEquals(120, s3.genTokens)
+        assertEquals(1024, s3.reasoningBudget) // Reasoning Budget 1024
+        assertNull(s3.toolName)
+        assertEquals("EOG", s3.stopReason)
+        assertEquals(50.0, s3.ttftMs, 0.01)
+    }
 }
