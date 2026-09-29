@@ -290,6 +290,7 @@ fun AgentScreen(
                             resultText = when (runResult) {
                                 is AgentResult.Success -> runResult.finalAnswer
                                 is AgentResult.MaxStepsReached -> runResult.finalAnswer
+                                is AgentResult.ToolRetryLimitExceeded -> runResult.finalAnswer
                                 is AgentResult.Cancelled -> runResult.message
                                 is AgentResult.Error -> runResult.errorMessage
                             }
@@ -799,6 +800,14 @@ private fun StepMetricsDisplay(metrics: AgentStepMetrics) {
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace
             )
+            if (metrics.retryCount > 0) {
+                Text(
+                    text = "• Retry Count: ${metrics.retryCount}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
 
             metrics.diagnostics?.let { diag ->
                 HorizontalDivider(
@@ -878,6 +887,12 @@ private fun formatBenchmarkText(
             sb.appendLine("• Tool: -")
         }
         sb.appendLine("• Stop Reason: ${step.stopReason}")
+        if (step.retryCount > 0) {
+            sb.appendLine("• Retry Count: ${step.retryCount}")
+        }
+        if (step.errorMessage != null) {
+            sb.appendLine("• Tool Error: ${step.errorMessage}")
+        }
         sb.appendLine("• Step Total: ${String.format(Locale.US, "%.1f", step.stepTotalTimeMs)} ms")
         step.diagnostics?.let { diag ->
             sb.appendLine()
@@ -939,6 +954,9 @@ private data class GenerationAnalysis(
 private fun analyzeGeneration(step: AgentStep): GenerationAnalysis {
     if (step.metrics?.stopReason == "MAX_STEPS") {
         return GenerationAnalysis("MAX_STEPS", "算出不可", "算出不可")
+    }
+    if (step.metrics?.stopReason == "tool_retry_limit_exceeded") {
+        return GenerationAnalysis("tool_retry_limit_exceeded", "算出不可", "算出不可")
     }
     val raw = step.rawLlmOutput
     val endIdx = raw.indexOf("</think>")

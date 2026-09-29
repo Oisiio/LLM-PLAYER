@@ -1397,4 +1397,376 @@ class AgentRunnerTest {
         assertEquals("EOG", s3.stopReason)
         assertEquals(50.0, s3.ttftMs, 0.01)
     }
+
+    // ==========================================
+    // Tool Error Recovery Tests
+    // ==========================================
+
+    @Test
+    fun testToolErrorRecovery_toolErrorIncludedInNextStepPrompt() = runBlocking {
+        var step2Prompt = ""
+        var inferenceCount = 0
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return when (inferenceCount) {
+                    1 -> {
+                        """
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": "100 / 0"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    2 -> {
+                        step2Prompt = prompt
+                        "0で割ることはできません。"
+                    }
+                    else -> "Unexpected"
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run("100 / 0 を計算して")
+        assertTrue("Result should be Success", result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals(2, success.steps.size)
+
+        // Step 1: Failed tool call
+        val step1 = success.steps[0]
+        assertEquals("calculator", step1.toolCall?.toolName)
+        assertTrue(step1.toolResult is ToolExecutionResult.Error)
+        assertEquals(1, step1.retryCount)
+        assertEquals("TOOL_CALL", step1.metrics?.stopReason)
+        assertEquals(1, step1.metrics?.retryCount)
+        assertNotNull(step1.toolError)
+        assertTrue(step1.toolError!!.contains("Division by zero"))
+
+        // Step 2 prompt should contain the error information
+        assertTrue("Prompt in step 2 should contain division by zero error", step2Prompt.contains("Division by zero"))
+        assertTrue("Prompt in step 2 should contain calculator tool name", step2Prompt.contains("calculator"))
+    }
+
+    @Test
+    fun testToolErrorRecovery_proceedsToCorrectedToolCallAndSucceeds() = runBlocking {
+        var inferenceCount = 0
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return when (inferenceCount) {
+                    1 -> {
+                        // Step 1: invalid expression error
+                        """
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": "10 + +"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    2 -> {
+                        // Step 2: corrected tool call
+                        assertTrue(prompt.contains("Invalid expression") || prompt.contains("Calculator Error"))
+                        """
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": "10 + 20"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    3 -> {
+                        // Step 3: final answer
+                        assertTrue(prompt.contains("30"))
+                        "計算結果は 30 です。"
+                    }
+                    else -> "Unexpected"
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run("10 + 20 を計算して")
+        assertTrue("Result should be Success", result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals(3, success.steps.size)
+        assertEquals("計算結果は 30 です。", success.finalAnswer)
+
+        // Step 1: Failed tool call
+        val step1 = success.steps[0]
+        assertEquals("calculator", step1.toolCall?.toolName)
+        assertTrue(step1.toolResult is ToolExecutionResult.Error)
+        assertEquals(1, step1.retryCount)
+
+        // Step 2: Corrected tool call succeeded
+        val step2 = success.steps[1]
+        assertEquals("calculator", step2.toolCall?.toolName)
+        assertTrue(step2.toolResult is ToolExecutionResult.Success)
+        assertEquals("30", (step2.toolResult as ToolExecutionResult.Success).output)
+        assertEquals(0, step2.retryCount)
+
+        // Step 3: Final Answer
+        val step3 = success.steps[2]
+        assertTrue(step3.isFinal)
+        assertEquals("EOG", step3.metrics?.stopReason)
+    }
+
+    @Test
+    fun testToolErrorRecovery_continuesWhenErrorsWithinLimit_twoErrorsThenSuccess() = runBlocking {
+        var inferenceCount = 0
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return when (inferenceCount) {
+                    1 -> {
+                        // Error 1: empty expression
+                        """
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": ""}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    2 -> {
+                        // Error 2: division by zero
+                        """
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": "5 / 0"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    3 -> {
+                        // Success on 3rd attempt (after 2 errors)
+                        """
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": "6 * 7"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    4 -> {
+                        "計算結果は 42 です。"
+                    }
+                    else -> "Unexpected"
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run("6 * 7 を計算して")
+        assertTrue("Result should be Success", result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals(4, success.steps.size)
+        assertEquals("計算結果は 42 です。", success.finalAnswer)
+
+        // Step 1: 1st error
+        assertEquals(1, success.steps[0].retryCount)
+        assertTrue(success.steps[0].toolResult is ToolExecutionResult.Error)
+
+        // Step 2: 2nd error
+        assertEquals(2, success.steps[1].retryCount)
+        assertTrue(success.steps[1].toolResult is ToolExecutionResult.Error)
+
+        // Step 3: Success resets failure count
+        assertEquals(0, success.steps[2].retryCount)
+        assertTrue(success.steps[2].toolResult is ToolExecutionResult.Success)
+        assertEquals("42", (success.steps[2].toolResult as ToolExecutionResult.Success).output)
+
+        // Step 4: Final
+        assertTrue(success.steps[3].isFinal)
+    }
+
+    @Test
+    fun testToolErrorRecovery_stopsAgentOnThreeConsecutiveErrors() = runBlocking {
+        val logs = mutableListOf<String>()
+        var inferenceCount = 0
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                // Continuously returns failing expression
+                return """
+                    <tool_call>
+                    {"name": "calculator", "arguments": {"expression": "fail_$inferenceCount / 0"}}
+                    </tool_call>
+                """.trimIndent()
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool())),
+            logger = { msg -> logs.add(msg) }
+        )
+
+        val result = agent.run("3回連続エラーテスト", maxSteps = 5)
+        assertTrue("Result should be ToolRetryLimitExceeded but was: $result", result is AgentResult.ToolRetryLimitExceeded)
+        val retryLimitResult = result as AgentResult.ToolRetryLimitExceeded
+        assertEquals("calculator", retryLimitResult.toolName)
+        assertEquals(3, retryLimitResult.failureCount)
+        assertEquals(3, retryLimitResult.steps.size)
+        assertEquals(3, inferenceCount)
+
+        // Check Step 1, 2, 3 retry counts
+        assertEquals(1, retryLimitResult.steps[0].retryCount)
+        assertEquals("TOOL_CALL", retryLimitResult.steps[0].metrics?.stopReason)
+
+        assertEquals(2, retryLimitResult.steps[1].retryCount)
+        assertEquals("TOOL_CALL", retryLimitResult.steps[1].metrics?.stopReason)
+
+        val step3 = retryLimitResult.steps[2]
+        assertEquals(3, step3.retryCount)
+        assertEquals("tool_retry_limit_exceeded", step3.metrics?.stopReason)
+        assertEquals("calculator", step3.toolCall?.toolName)
+        assertNotNull(step3.toolError)
+        assertEquals(3, step3.metrics?.retryCount)
+
+        // Check diagnostics info
+        assertNotNull(step3.metrics?.diagnostics)
+        assertEquals("calculator", step3.metrics?.diagnostics?.toolName)
+        assertEquals(3, step3.metrics?.diagnostics?.retryCount)
+        assertEquals("tool_retry_limit_exceeded", step3.metrics?.diagnostics?.stopReason)
+
+        // Check logs
+        assertTrue(logs.contains("[Agent] stop=tool_retry_limit_exceeded"))
+        assertTrue(logs.contains("[Agent] stop"))
+    }
+
+    @Test
+    fun testToolErrorRecovery_malformedToolCallSyntax_recoversAndSucceeds() = runBlocking {
+        var inferenceCount = 0
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return when (inferenceCount) {
+                    1 -> {
+                        // Step 1: Malformed tool call tag content
+                        "<tool_call>{\"name\": \"calculator\", \"arguments\": {invalid json</tool_call>"
+                    }
+                    2 -> {
+                        // Step 2: LLM fixes formatting
+                        assertTrue(prompt.contains("Malformed tool call") || prompt.contains("error"))
+                        """
+                        <tool_call>
+                        {"name": "calculator", "arguments": {"expression": "5 * 5"}}
+                        </tool_call>
+                        """.trimIndent()
+                    }
+                    3 -> {
+                        "5 * 5 は 25 です。"
+                    }
+                    else -> "Unexpected"
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        val result = agent.run("5 * 5 を計算して")
+        assertTrue("Result should be Success", result is AgentResult.Success)
+        val success = result as AgentResult.Success
+        assertEquals(3, success.steps.size)
+        assertEquals("5 * 5 は 25 です。", success.finalAnswer)
+
+        // Step 1 captured the malformed tool call
+        val step1 = success.steps[0]
+        assertNotNull(step1.toolCall)
+        assertEquals("calculator", step1.toolCall?.toolName)
+        assertTrue(step1.toolResult is ToolExecutionResult.Error)
+        assertEquals(1, step1.retryCount)
+
+        // Step 2 succeeded
+        val step2 = success.steps[1]
+        assertTrue(step2.toolResult is ToolExecutionResult.Success)
+        assertEquals("25", (step2.toolResult as ToolExecutionResult.Success).output)
+    }
+
+    @Test
+    fun testToolErrorRecovery_maxStepsLimitPreserved_whenStoppedBeforeRetryLimit() = runBlocking {
+        var inferenceCount = 0
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return """
+                    <tool_call>
+                    {"name": "calculator", "arguments": {"expression": "10 / 0"}}
+                    </tool_call>
+                """.trimIndent()
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(CalculatorTool()))
+        )
+
+        // maxSteps = 2, so only 2 errors occur (not reaching 3) -> should stop with MaxStepsReached
+        val result = agent.run("maxSteps テスト", maxSteps = 2)
+        assertTrue("Expected MaxStepsReached but got: $result", result is AgentResult.MaxStepsReached)
+        val maxResult = result as AgentResult.MaxStepsReached
+        assertEquals(2, maxResult.steps.size)
+        assertEquals("MAX_STEPS", maxResult.steps.last().metrics?.stopReason)
+    }
 }

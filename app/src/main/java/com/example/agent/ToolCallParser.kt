@@ -3,7 +3,8 @@ package com.example.agent
 data class ToolCall(
     val toolName: String,
     val arguments: Map<String, String>,
-    val rawCallText: String
+    val rawCallText: String,
+    val parseError: String? = null
 )
 
 object ToolCallParser {
@@ -15,7 +16,14 @@ object ToolCallParser {
         val contentWithoutThink = stripThinkingBlocks(llmOutput)
         val match = TOOL_CALL_TAG_REGEX.find(contentWithoutThink) ?: return null
         val innerContent = match.groupValues[1].trim()
-        if (innerContent.isBlank()) return null
+        if (innerContent.isBlank()) {
+            return ToolCall(
+                toolName = "unknown",
+                arguments = emptyMap(),
+                rawCallText = match.value,
+                parseError = "Empty tool call: no tool specified"
+            )
+        }
 
         val cleaned = stripMarkdownCodeBlock(innerContent)
 
@@ -26,7 +34,22 @@ object ToolCallParser {
         }
 
         // 2. Try line / colon based parsing
-        return tryParseTextFormat(cleaned, match.value)
+        val textToolCall = tryParseTextFormat(cleaned, match.value)
+        if (textToolCall != null) {
+            return textToolCall
+        }
+
+        val toolName = extractStringProperty(cleaned, "name")
+            ?: extractStringProperty(cleaned, "tool")
+            ?: extractFirstWordBeforeJson(cleaned)
+            ?: "unknown"
+
+        return ToolCall(
+            toolName = toolName.lowercase().trim(),
+            arguments = emptyMap(),
+            rawCallText = match.value,
+            parseError = "Malformed tool call: invalid syntax or unparseable arguments"
+        )
     }
 
     private fun stripThinkingBlocks(text: String): String {
@@ -114,25 +137,34 @@ object ToolCallParser {
         if (lines.isEmpty()) return null
 
         val firstLine = lines.first()
+        if (firstLine.startsWith("{") || firstLine.startsWith("[") || firstLine.startsWith("\"")) {
+            return null
+        }
 
         // Case: "calculator: 12345 * 678"
         if (firstLine.contains(":")) {
             val parts = firstLine.split(":", limit = 2)
             val toolName = parts[0].trim().lowercase()
-            val expr = parts[1].trim().removeSurrounding("\"").removeSurrounding("'")
-            if (toolName.isNotBlank() && expr.isNotBlank()) {
-                return ToolCall(
-                    toolName = toolName,
-                    arguments = mapOf("expression" to expr),
-                    rawCallText = rawCallText
-                )
+            if (toolName.isNotBlank() && toolName.all { it.isLetterOrDigit() || it == '_' }) {
+                val expr = parts[1].trim().removeSurrounding("\"").removeSurrounding("'")
+                if (expr.isNotBlank()) {
+                    return ToolCall(
+                        toolName = toolName,
+                        arguments = mapOf("expression" to expr),
+                        rawCallText = rawCallText
+                    )
+                }
             }
+            return null
         }
 
         // Case:
         // calculator
         // expression: 12345 * 678
         val toolName = firstLine.lowercase().trim()
+        if (!toolName.all { it.isLetterOrDigit() || it == '_' }) {
+            return null
+        }
         val args = mutableMapOf<String, String>()
 
         for (i in 1 until lines.size) {

@@ -23,7 +23,9 @@ data class AgentStepMetrics(
     val newPromptTokens: Int = promptTokens,
     val diagnostics: StepDiagnostics? = null,
     val reasoningBudget: Int = 0,
-    val stopReason: String = "EOG"
+    val stopReason: String = "EOG",
+    val retryCount: Int = 0,
+    val errorMessage: String? = null
 )
 
 data class AgentBenchmarkSummary(
@@ -48,7 +50,9 @@ data class AgentStep(
     val metrics: AgentStepMetrics? = null,
     val thoughtText: String? = null,
     val isThoughtPrefilled: Boolean = false,
-    val isThoughtCompleted: Boolean = false
+    val isThoughtCompleted: Boolean = false,
+    val retryCount: Int = 0,
+    val toolError: String? = null
 )
 
 sealed class AgentResult {
@@ -63,6 +67,14 @@ sealed class AgentResult {
 
     data class MaxStepsReached(
         val finalAnswer: String = "Agent stopped: maximum step limit reached",
+        override val steps: List<AgentStep>,
+        override val benchmarkSummary: AgentBenchmarkSummary? = null
+    ) : AgentResult()
+
+    data class ToolRetryLimitExceeded(
+        val toolName: String,
+        val failureCount: Int,
+        val finalAnswer: String = "Agent stopped: tool retry limit exceeded for tool '$toolName' ($failureCount failures)",
         override val steps: List<AgentStep>,
         override val benchmarkSummary: AgentBenchmarkSummary? = null
     ) : AgentResult()

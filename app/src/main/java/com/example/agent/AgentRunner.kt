@@ -38,6 +38,7 @@ class AgentRunner(
     companion object {
         const val MAX_AGENT_STEPS = 5
         const val DEFAULT_MAX_STEPS = 5
+        const val MAX_TOOL_RETRY_LIMIT = 2
 
         internal fun extractThoughtInfo(
             rawOutput: String,
@@ -162,6 +163,7 @@ class AgentRunner(
                 }
 
                 val effectiveMaxSteps = minOf(maxSteps, MAX_AGENT_STEPS)
+                val consecutiveToolFailures = mutableMapOf<String, Int>()
 
                 for (stepNum in 1..effectiveMaxSteps) {
                     val stepStartNano = System.nanoTime()
@@ -433,7 +435,11 @@ class AgentRunner(
                     var toolExecutionTimeMs = 0.0
 
                     val tool = toolRegistry.getTool(toolCall.toolName)
-                    val toolResult = if (tool == null) {
+                    val toolResult = if (toolCall.parseError != null) {
+                        val err = toolCall.parseError
+                        logger.log("[Agent] error=$err")
+                        ToolExecutionResult.Error(err)
+                    } else if (tool == null) {
                         val notFoundErr = "Tool '${toolCall.toolName}' is not registered."
                         logger.log("[Agent] error=$notFoundErr")
                         ToolExecutionResult.Error(notFoundErr)
@@ -486,8 +492,39 @@ class AgentRunner(
                     val cTokens = stepDebugMetrics?.cachedTokens ?: 0
                     val nTokens = stepDebugMetrics?.newPromptTokens ?: (pTokens - cTokens)
 
+                    val isToolError = toolResult is ToolExecutionResult.Error
+                    val toolNameLower = toolCall.toolName.lowercase().trim()
+
+                    val retryCount = if (tool != null) {
+                        if (isToolError) {
+                            val count = (consecutiveToolFailures[toolNameLower] ?: 0) + 1
+                            consecutiveToolFailures[toolNameLower] = count
+                            count
+                        } else {
+                            consecutiveToolFailures[toolNameLower] = 0
+                            0
+                        }
+                    } else {
+                        0
+                    }
+
+                    val isRetryLimitExceeded = retryCount > MAX_TOOL_RETRY_LIMIT
                     val isLastAllowedStep = stepNum >= effectiveMaxSteps
-                    val stepStopReason = if (isLastAllowedStep) "MAX_STEPS" else "TOOL_CALL"
+
+                    val stepStopReason = when {
+                        isRetryLimitExceeded -> "tool_retry_limit_exceeded"
+                        isLastAllowedStep -> "MAX_STEPS"
+                        else -> "TOOL_CALL"
+                    }
+
+                    val errMessage = (toolResult as? ToolExecutionResult.Error)?.errorMessage
+
+                    val finalStepDiagnostics = (stepDiagnostics ?: StepDiagnostics(stepNumber = stepNum)).copy(
+                        toolName = toolCall.toolName,
+                        toolError = errMessage,
+                        retryCount = retryCount,
+                        stopReason = stepStopReason
+                    )
 
                     val stepMetrics = AgentStepMetrics(
                         stepNumber = stepNum,
@@ -504,9 +541,11 @@ class AgentRunner(
                         stepTotalTimeMs = stepTotalTimeMs,
                         cachedTokens = cTokens,
                         newPromptTokens = nTokens,
-                        diagnostics = stepDiagnostics,
+                        diagnostics = finalStepDiagnostics,
                         reasoningBudget = stepThinkingBudget,
-                        stopReason = stepStopReason
+                        stopReason = stepStopReason,
+                        retryCount = retryCount,
+                        errorMessage = errMessage
                     )
 
                     val (thoughtText, thoughtPrefilled, thoughtCompleted) = extractThoughtInfo(
@@ -525,10 +564,24 @@ class AgentRunner(
                         metrics = stepMetrics,
                         thoughtText = thoughtText,
                         isThoughtPrefilled = thoughtPrefilled,
-                        isThoughtCompleted = thoughtCompleted
+                        isThoughtCompleted = thoughtCompleted,
+                        retryCount = retryCount,
+                        toolError = errMessage
                     )
                     steps.add(currentStep)
                     onStepUpdate?.invoke(currentStep)
+
+                    if (isRetryLimitExceeded) {
+                        logger.log("[Agent] stop=tool_retry_limit_exceeded")
+                        logStopIfNeeded()
+                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                        return@coroutineScope AgentResult.ToolRetryLimitExceeded(
+                            toolName = toolCall.toolName,
+                            failureCount = retryCount,
+                            steps = steps,
+                            benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs)
+                        )
+                    }
                 }
 
                 // Reached max steps

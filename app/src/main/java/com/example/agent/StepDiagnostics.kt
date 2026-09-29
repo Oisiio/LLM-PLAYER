@@ -33,7 +33,12 @@ data class StepDiagnostics(
     val majorPageFaults: Long = 0L,
     val pageFaultsAvailable: Boolean = true,
     // 7: CPU Cores
-    val cpuCores: String = ""
+    val cpuCores: String = "",
+    // Tool Error Recovery info
+    val toolName: String? = null,
+    val toolError: String? = null,
+    val retryCount: Int = 0,
+    val stopReason: String? = null
 ) {
     fun formatReport(): String = formatDiagnosticsText(this)
 
@@ -151,6 +156,14 @@ data class StepDiagnostics(
             sb.appendLine()
             sb.appendLine("CPU cores")
             sb.appendLine("Step ${diag.stepNumber}: ${if (diag.cpuCores.isNotEmpty()) diag.cpuCores else "Unknown"}")
+            if (diag.toolError != null || diag.retryCount > 0) {
+                sb.appendLine()
+                sb.appendLine("Tool Recovery")
+                diag.toolName?.let { sb.appendLine("Tool: $it") }
+                diag.toolError?.let { sb.appendLine("Error: $it") }
+                if (diag.retryCount > 0) sb.appendLine("Retry Count: ${diag.retryCount}")
+                diag.stopReason?.let { sb.appendLine("Stop Reason: $it") }
+            }
             return sb.toString().trimEnd()
         }
     }
