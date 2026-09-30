@@ -79,6 +79,13 @@ sealed class AgentResult {
         override val benchmarkSummary: AgentBenchmarkSummary? = null
     ) : AgentResult()
 
+    data class ToolDuplicateDetected(
+        val toolName: String,
+        val finalAnswer: String = "Agent stopped: duplicate tool call detected for tool '$toolName'",
+        override val steps: List<AgentStep>,
+        override val benchmarkSummary: AgentBenchmarkSummary? = null
+    ) : AgentResult()
+
     data class Cancelled(
         val message: String = "Agent stopped by user",
         override val steps: List<AgentStep>,
