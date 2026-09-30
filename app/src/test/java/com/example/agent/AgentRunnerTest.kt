@@ -1769,4 +1769,166 @@ class AgentRunnerTest {
         assertEquals(2, maxResult.steps.size)
         assertEquals("MAX_STEPS", maxResult.steps.last().metrics?.stopReason)
     }
+
+    @Test
+    fun testToolDuplicateDetection_sameSuccessfulToolCallStopsBeforeSecondExecution() = runBlocking {
+        var inferenceCount = 0
+        var toolExecutionCount = 0
+
+        val countingTool = object : Tool {
+            override val name = "counter"
+            override val description = "Counts executions"
+            override val parameters = listOf(
+                ToolParameter("value", "string", "Value")
+            )
+
+            override suspend fun execute(arguments: Map<String, String>): ToolExecutionResult {
+                toolExecutionCount++
+                return ToolExecutionResult.Success("ok")
+            }
+        }
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return """
+                    <tool_call>
+                    {"name": "counter", "arguments": {"value": "same"}}
+                    </tool_call>
+                """.trimIndent()
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(countingTool))
+        )
+
+        val result = agent.run("同じToolを繰り返さないで", maxSteps = 5)
+
+        assertTrue(result is AgentResult.ToolDuplicateDetected)
+        val duplicate = result as AgentResult.ToolDuplicateDetected
+        assertEquals("counter", duplicate.toolName)
+        assertEquals(2, duplicate.steps.size)
+        assertEquals(2, inferenceCount)
+        assertEquals(1, toolExecutionCount)
+        assertEquals("TOOL_CALL", duplicate.steps[0].metrics?.stopReason)
+        assertEquals("tool_duplicate_detected", duplicate.steps[1].metrics?.stopReason)
+        assertTrue(duplicate.steps[1].toolError?.contains("Duplicate tool call detected") == true)
+    }
+
+    @Test
+    fun testToolDuplicateDetection_argumentOrderDoesNotMatter() = runBlocking {
+        var inferenceCount = 0
+        var toolExecutionCount = 0
+
+        val countingTool = object : Tool {
+            override val name = "counter"
+            override val description = "Counts executions"
+            override val parameters = listOf(
+                ToolParameter("a", "string", "A"),
+                ToolParameter("b", "string", "B")
+            )
+
+            override suspend fun execute(arguments: Map<String, String>): ToolExecutionResult {
+                toolExecutionCount++
+                return ToolExecutionResult.Success("ok")
+            }
+        }
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return if (inferenceCount == 1) {
+                    """<tool_call>{"name":"counter","arguments":{"a":"1","b":"2"}}</tool_call>"""
+                } else {
+                    """<tool_call>{"name":"counter","arguments":{"b":"2","a":"1"}}</tool_call>"""
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(countingTool))
+        )
+
+        val result = agent.run("引数順が違っても重複扱い", maxSteps = 5)
+
+        assertTrue(result is AgentResult.ToolDuplicateDetected)
+        assertEquals(2, result.steps.size)
+        assertEquals(1, toolExecutionCount)
+        assertEquals("tool_duplicate_detected", result.steps.last().metrics?.stopReason)
+    }
+
+    @Test
+    fun testToolDuplicateDetection_failedCallCanBeRetried() = runBlocking {
+        var inferenceCount = 0
+        var toolExecutionCount = 0
+
+        val retryTool = object : Tool {
+            override val name = "retryable"
+            override val description = "Fails once, then succeeds"
+            override val parameters = listOf(
+                ToolParameter("value", "string", "Value")
+            )
+
+            override suspend fun execute(arguments: Map<String, String>): ToolExecutionResult {
+                toolExecutionCount++
+                return if (toolExecutionCount == 1) {
+                    ToolExecutionResult.Error("temporary failure")
+                } else {
+                    ToolExecutionResult.Success("recovered")
+                }
+            }
+        }
+
+        val mockRunner = object : LlmStreamRunner {
+            override fun isModelLoaded(): Boolean = true
+            override fun cancelGeneration() {}
+            override suspend fun runStreamingInference(
+                prompt: String, temperature: Float, topK: Int, topP: Float,
+                minP: Float, typicalP: Float, repetitionPenalty: Float,
+                penaltyLastN: Int, seed: Long, enableThinking: Boolean,
+                onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
+                onMetrics: ((TalkDebugMetrics) -> Unit)?
+            ): String {
+                inferenceCount++
+                return when (inferenceCount) {
+                    1, 2 -> """<tool_call>{"name":"retryable","arguments":{"value":"same"}}</tool_call>"""
+                    else -> "Recovered successfully."
+                }
+            }
+        }
+
+        val agent = AgentRunner(
+            llmRunner = mockRunner,
+            toolRegistry = ToolRegistry(listOf(retryTool))
+        )
+
+        val result = agent.run("失敗したToolを同じ引数で再試行して成功させる", maxSteps = 5)
+
+        assertTrue(result is AgentResult.Success)
+        assertEquals("Recovered successfully.", (result as AgentResult.Success).finalAnswer)
+        assertEquals(2, toolExecutionCount)
+        assertEquals(2, result.steps.size - 1)
+        assertEquals(1, result.steps[0].retryCount)
+        assertEquals(0, result.steps[1].retryCount)
+    }
+
 }
