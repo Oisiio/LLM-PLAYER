@@ -959,6 +959,9 @@ private fun analyzeGeneration(step: AgentStep): GenerationAnalysis {
     if (step.metrics?.stopReason == "tool_retry_limit_exceeded") {
         return GenerationAnalysis("tool_retry_limit_exceeded", "算出不可", "算出不可")
     }
+    if (step.metrics?.stopReason == "tool_duplicate_detected") {
+        return GenerationAnalysis("tool_duplicate_detected", "算出不可", "算出不可")
+    }
     val raw = step.rawLlmOutput
     val endIdx = raw.indexOf("</think>")
     val completed = step.isThoughtCompleted && endIdx >= 0
