@@ -40,6 +40,14 @@ class AgentRunner(
         const val DEFAULT_MAX_STEPS = 5
         const val MAX_TOOL_RETRY_LIMIT = 2
 
+        private fun buildToolCallKey(toolCall: ToolCall): String = buildString {
+            append(toolCall.toolName.lowercase().trim())
+            toolCall.arguments.toSortedMap().forEach { (key, value) ->
+                append('|').append(key.lowercase().trim())
+                append('=').append(value.trim())
+            }
+        }
+
         internal fun extractThoughtInfo(
             rawOutput: String,
             isFirstStep: Boolean,
@@ -164,6 +172,7 @@ class AgentRunner(
 
                 val effectiveMaxSteps = minOf(maxSteps, MAX_AGENT_STEPS)
                 val consecutiveToolFailures = mutableMapOf<String, Int>()
+                val successfulToolCallKeys = mutableSetOf<String>()
 
                 for (stepNum in 1..effectiveMaxSteps) {
                     val stepStartNano = System.nanoTime()
@@ -434,8 +443,14 @@ class AgentRunner(
                     var toolEndTimestamp = 0L
                     var toolExecutionTimeMs = 0.0
 
+                    val toolCallKey = buildToolCallKey(toolCall)
+                    val isDuplicateToolCall = successfulToolCallKeys.contains(toolCallKey)
                     val tool = toolRegistry.getTool(toolCall.toolName)
-                    val toolResult = if (toolCall.parseError != null) {
+                    val toolResult = if (isDuplicateToolCall) {
+                        val err = "Duplicate tool call detected: ${toolCall.toolName} with the same arguments was already executed successfully."
+                        logger.log("[Agent] duplicate=$err")
+                        ToolExecutionResult.Error(err)
+                    } else if (toolCall.parseError != null) {
                         val err = toolCall.parseError
                         logger.log("[Agent] error=$err")
                         ToolExecutionResult.Error(err)
@@ -495,6 +510,10 @@ class AgentRunner(
                     val isToolError = toolResult is ToolExecutionResult.Error
                     val toolNameLower = toolCall.toolName.lowercase().trim()
 
+                    if (toolResult is ToolExecutionResult.Success) {
+                        successfulToolCallKeys.add(toolCallKey)
+                    }
+
                     val retryCount = if (tool != null) {
                         if (isToolError) {
                             val count = (consecutiveToolFailures[toolNameLower] ?: 0) + 1
@@ -512,6 +531,7 @@ class AgentRunner(
                     val isLastAllowedStep = stepNum >= effectiveMaxSteps
 
                     val stepStopReason = when {
+                        isDuplicateToolCall -> "tool_duplicate_detected"
                         isRetryLimitExceeded -> "tool_retry_limit_exceeded"
                         isLastAllowedStep -> "MAX_STEPS"
                         else -> "TOOL_CALL"
@@ -570,6 +590,17 @@ class AgentRunner(
                     )
                     steps.add(currentStep)
                     onStepUpdate?.invoke(currentStep)
+
+                    if (isDuplicateToolCall) {
+                        logger.log("[Agent] stop=tool_duplicate_detected")
+                        logStopIfNeeded()
+                        val agentTotalTimeMs = (System.nanoTime() - agentStartNano) / 1_000_000.0
+                        return@coroutineScope AgentResult.ToolDuplicateDetected(
+                            toolName = toolCall.toolName,
+                            steps = steps,
+                            benchmarkSummary = buildBenchmarkSummary(agentTotalTimeMs)
+                        )
+                    }
 
                     if (isRetryLimitExceeded) {
                         logger.log("[Agent] stop=tool_retry_limit_exceeded")
