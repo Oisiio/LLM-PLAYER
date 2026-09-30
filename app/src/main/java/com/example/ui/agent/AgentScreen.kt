@@ -291,6 +291,7 @@ fun AgentScreen(
                                 is AgentResult.Success -> runResult.finalAnswer
                                 is AgentResult.MaxStepsReached -> runResult.finalAnswer
                                 is AgentResult.ToolRetryLimitExceeded -> runResult.finalAnswer
+                                is AgentResult.ToolDuplicateDetected -> runResult.finalAnswer
                                 is AgentResult.Cancelled -> runResult.message
                                 is AgentResult.Error -> runResult.errorMessage
                             }
