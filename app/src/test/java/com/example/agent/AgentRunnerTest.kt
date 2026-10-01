@@ -268,6 +268,7 @@ class AgentRunnerTest {
     @Test
     fun testMaxStepsLimit() = runBlocking {
         val logs = mutableListOf<String>()
+        var callCount = 0
 
         val endlessToolRunner = object : LlmStreamRunner {
             override fun isModelLoaded(): Boolean = true
@@ -279,7 +280,8 @@ class AgentRunnerTest {
                 onToken: (String) -> Unit, onTtft: ((Double) -> Unit)?,
                 onMetrics: ((TalkDebugMetrics) -> Unit)?
             ): String {
-                return "<tool_call>calculator: 1 + 1</tool_call>"
+                callCount++
+                return "<tool_call>calculator: $callCount + 1</tool_call>"
             }
         }
 

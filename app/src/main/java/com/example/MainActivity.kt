@@ -607,7 +607,9 @@ private fun PlayerApp(
           AppDestination.AGENT -> AgentScreen(
             agentRunner = agentRunner,
             isModelLoaded = isModelLoaded,
-            onOpenDrawer = { coroutineScope.launch { drawerState.open() } }
+            modelName = modelName,
+            onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
+            onBack = { destination = AppDestination.HOME }
           )
 
           AppDestination.MODELS -> ModelScreen(

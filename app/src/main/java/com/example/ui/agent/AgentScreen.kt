@@ -1,26 +1,23 @@
 package com.example.ui.agent
 
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.*
-import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Calculate
-import androidx.compose.material.icons.filled.CalendarToday
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DeleteOutline
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Psychology
-import androidx.compose.material.icons.filled.PsychologyAlt
-import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Speed
-import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -33,6 +30,7 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.agent.AgentBenchmarkSummary
@@ -43,24 +41,28 @@ import com.example.agent.AgentSamplingConfig
 import com.example.agent.AgentState
 import com.example.agent.AgentStep
 import com.example.agent.AgentStepMetrics
-import com.example.agent.StepDiagnostics
 import com.example.agent.ToolCallParser
-import com.example.agent.ToolExecutionResult
+import com.example.ui.agent.components.AgentChatInputBar
+import com.example.ui.agent.components.AgentEmptyState
+import com.example.ui.agent.components.AgentMessageBubble
+import com.example.ui.agent.model.AgentMessageRole
+import com.example.ui.agent.model.AgentUiMessage
 import java.util.Locale
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalLayoutApi::class)
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AgentScreen(
     agentRunner: AgentRunner,
     isModelLoaded: Boolean,
+    modelName: String = "",
     onOpenDrawer: (() -> Unit)? = null,
+    onBack: (() -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     val context = LocalContext.current
-    val clipboardManager = LocalClipboardManager.current
     val agentPreferences = remember { AgentPreferences(context) }
     var systemPrompt by remember { mutableStateOf(agentPreferences.systemPrompt) }
     var isThinkingEnabled by remember { mutableStateOf(agentPreferences.isThinkingEnabled) }
@@ -69,597 +71,285 @@ fun AgentScreen(
     var isPrefixCacheEnabled by remember { mutableStateOf(agentPreferences.isPrefixCacheEnabled) }
     var isDiagnosticsEnabled by remember { mutableStateOf(agentPreferences.isDiagnosticsEnabled) }
     var isStep1ThinkingDisabled by remember { mutableStateOf(agentPreferences.isStep1ThinkingDisabled) }
+
     var showSettingsDialog by remember { mutableStateOf(false) }
+    var showMoreMenu by remember { mutableStateOf(false) }
 
     val coroutineScope = rememberCoroutineScope()
-    var prompt by remember { mutableStateOf("12345 * 678 を計算してください") }
+    val listState = rememberLazyListState()
+
+    var inputText by remember { mutableStateOf("") }
+    var messages by remember { mutableStateOf<List<AgentUiMessage>>(emptyList()) }
+
     val agentState by agentRunner.state.collectAsState()
     val isRunning = agentState == AgentState.RUNNING
     val isCancelling = agentState == AgentState.CANCELLING
-    var steps by remember { mutableStateOf<List<AgentStep>>(emptyList()) }
-    var resultText by remember { mutableStateOf<String?>(null) }
-    var benchmarkSummary by remember { mutableStateOf<AgentBenchmarkSummary?>(null) }
-    var liveTokens by remember { mutableStateOf("") }
-    var liveThoughtText by remember { mutableStateOf("") }
-    var isLiveThoughtPrefilled by remember { mutableStateOf(false) }
-    var isLiveThinking by remember { mutableStateOf(false) }
-    var copiedSection by remember { mutableStateOf<String?>(null) }
 
-    val presets = listOf(
-        "12345 * 678 を計算して",
-        "今日は何日ですか？",
-        "今何時？",
-        "2026-12-25 は何曜日？",
-        "今日からクリスマス（2026-12-25）まで何日？",
-        "今日からクリスマスまでの日数を計算して、1日500円貯金したらいくらになる？",
-        "100 / 4",
-        "こんにちは"
-    )
+    if (onBack != null) {
+        BackHandler { onBack() }
+    }
 
-    Column(
+    // Auto-scroll to bottom on new message or update
+    LaunchedEffect(messages.size) {
+        if (messages.isNotEmpty()) {
+            listState.animateScrollToItem(messages.size - 1)
+        }
+    }
+
+    val handleSendMessage: (String) -> Unit = { userPromptText ->
+        val prompt = userPromptText.trim()
+        if (prompt.isNotEmpty() && !isRunning && isModelLoaded) {
+            inputText = ""
+            val userMsg = AgentUiMessage(
+                role = AgentMessageRole.USER,
+                text = prompt
+            )
+            val assistantMsgId = java.util.UUID.randomUUID().toString()
+            val assistantMsg = AgentUiMessage(
+                id = assistantMsgId,
+                role = AgentMessageRole.ASSISTANT,
+                text = "",
+                isRunning = true,
+                currentStatus = "考え中…"
+            )
+            messages = messages + userMsg + assistantMsg
+
+            coroutineScope.launch {
+                try {
+                    agentRunner.configureTools(
+                        agentPreferences.isCalculatorEnabled,
+                        agentPreferences.isDateTimeEnabled
+                    )
+                    val runResult = agentRunner.run(
+                        userPrompt = prompt,
+                        samplingConfig = AgentSamplingConfig(enablePrefixCache = isPrefixCacheEnabled),
+                        maxSteps = agentPreferences.maxSteps,
+                        systemPrompt = systemPrompt,
+                        enableThinking = isThinkingEnabled,
+                        thinkingBudget = thinkingBudget,
+                        disableStep1Thinking = isStep1ThinkingDisabled,
+                        enableDiagnostics = isDiagnosticsEnabled,
+                        onStepUpdate = { newStep ->
+                            val toolName = newStep.toolCall?.toolName ?: ""
+                            val statusText = when (toolName.lowercase()) {
+                                "datetime" -> "日時を確認中…"
+                                "calculator" -> "計算中…"
+                                else -> "ツール実行中…"
+                            }
+                            messages = messages.map { msg ->
+                                if (msg.id == assistantMsgId) {
+                                    msg.copy(
+                                        steps = msg.steps + newStep,
+                                        currentStatus = statusText
+                                    )
+                                } else msg
+                            }
+                        },
+                        onToken = { token ->
+                            messages = messages.map { msg ->
+                                if (msg.id == assistantMsgId) {
+                                    msg.copy(
+                                        text = msg.text + token,
+                                        currentStatus = null
+                                    )
+                                } else msg
+                            }
+                        },
+                        onThoughtUpdate = { _, _, isThinking ->
+                            if (isThinking) {
+                                messages = messages.map { msg ->
+                                    if (msg.id == assistantMsgId && msg.text.isBlank()) {
+                                        msg.copy(currentStatus = "考え中…")
+                                    } else msg
+                                }
+                            }
+                        }
+                    )
+
+                    val (finalText, isError) = when (runResult) {
+                        is AgentResult.Success -> runResult.finalAnswer to false
+                        is AgentResult.MaxStepsReached -> runResult.finalAnswer to false
+                        is AgentResult.ToolRetryLimitExceeded -> runResult.finalAnswer to true
+                        is AgentResult.ToolDuplicateDetected -> runResult.finalAnswer to true
+                        is AgentResult.Cancelled -> (if (runResult.message.isNotBlank()) runResult.message else "停止しました") to false
+                        is AgentResult.Error -> runResult.errorMessage to true
+                    }
+
+                    messages = messages.map { msg ->
+                        if (msg.id == assistantMsgId) {
+                            msg.copy(
+                                text = if (finalText.isNotBlank()) finalText else msg.text,
+                                steps = if (runResult.steps.isNotEmpty()) runResult.steps else msg.steps,
+                                isRunning = false,
+                                currentStatus = null,
+                                isError = isError,
+                                benchmarkSummary = runResult.benchmarkSummary
+                            )
+                        } else msg
+                    }
+                } catch (e: CancellationException) {
+                    messages = messages.map { msg ->
+                        if (msg.id == assistantMsgId) {
+                            msg.copy(
+                                text = if (msg.text.isNotBlank()) msg.text else "停止しました",
+                                isRunning = false,
+                                currentStatus = null
+                            )
+                        } else msg
+                    }
+                }
+            }
+        }
+    }
+
+    Scaffold(
         modifier = modifier
             .fillMaxSize()
             .statusBarsPadding()
             .navigationBarsPadding()
-            .imePadding()
-            .verticalScroll(rememberScrollState())
-            .padding(horizontal = 16.dp, vertical = 8.dp),
-        verticalArrangement = Arrangement.spacedBy(12.dp)
-    ) {
-        // Header
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Row(
-                modifier = Modifier.weight(1f),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                if (onOpenDrawer != null) {
-                    IconButton(
-                        onClick = onOpenDrawer,
-                        modifier = Modifier.size(40.dp).testTag("agent_drawer_button")
-                    ) {
-                        Icon(
-                            imageVector = Icons.Default.Menu,
-                            contentDescription = "Menu"
-                        )
-                    }
-                }
-                Column {
-                    Text(
-                        text = "Agent",
-                        style = MaterialTheme.typography.titleLarge,
-                        fontWeight = FontWeight.Bold
-                    )
-                    Text(
-                        text = "Calculator & DateTime Tool 検証環境",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-            }
-            Row(
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp)
-            ) {
-                AssistChip(
-                    onClick = {},
-                    label = { Text(if (isModelLoaded) "Model Loaded" else "No Model") },
-                    colors = AssistChipDefaults.assistChipColors(
-                        labelColor = if (isModelLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error
-                    )
-                )
-                IconButton(
-                    onClick = { showSettingsDialog = true },
-                    modifier = Modifier.testTag("agent_settings_button")
-                ) {
-                    Icon(
-                        Icons.Filled.Settings,
-                        contentDescription = "Agent設定"
-                    )
-                }
-            }
-        }
-
-        // Settings Status Chips
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            AssistChip(
-                onClick = { showSettingsDialog = true },
-                label = { Text("Thinking: ${if (isThinkingEnabled) "ON (${thinkingBudget})" else "OFF"}") },
-                leadingIcon = {
-                    Icon(
-                        if (isThinkingEnabled) Icons.Filled.Psychology else Icons.Filled.PsychologyAlt,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                },
-                modifier = Modifier.testTag("agent_thinking_status_chip")
-            )
-            FilterChip(
-                selected = isBenchmarkMode,
-                onClick = {
-                    isBenchmarkMode = !isBenchmarkMode
-                    agentPreferences.isBenchmarkMode = isBenchmarkMode
-                },
-                label = { Text("Benchmark: ${if (isBenchmarkMode) "ON" else "OFF"}") },
-                leadingIcon = {
-                    Icon(
-                        Icons.Filled.Speed,
-                        contentDescription = null,
-                        modifier = Modifier.size(16.dp)
-                    )
-                },
-                modifier = Modifier.testTag("agent_benchmark_status_chip")
-            )
-            AssistChip(
-                onClick = { showSettingsDialog = true },
-                label = { Text("設定") },
-                leadingIcon = {
-                    Icon(Icons.Filled.Tune, contentDescription = null, modifier = Modifier.size(16.dp))
-                },
-                modifier = Modifier.testTag("agent_settings_chip")
-            )
-        }
-
-        // Quick test chips
-        Text(
-            text = "テストケース (タップで入力):",
-            style = MaterialTheme.typography.labelMedium,
-            fontWeight = FontWeight.SemiBold
-        )
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .horizontalScroll(rememberScrollState()),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            presets.forEach { preset ->
-                SuggestionChip(
-                    onClick = { if (agentState == AgentState.IDLE) prompt = preset },
-                    label = { Text(preset) },
-                    enabled = agentState == AgentState.IDLE
-                )
-            }
-        }
-
-        // Input TextField
-        OutlinedTextField(
-            value = prompt,
-            onValueChange = { prompt = it },
-            modifier = Modifier
-                .fillMaxWidth()
-                .testTag("agent_prompt_input"),
-            label = { Text("プロンプト (計算や質問)") },
-            minLines = 2,
-            enabled = agentState == AgentState.IDLE
-        )
-
-        // Action Buttons
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            Button(
-                onClick = {
-                    if (agentState != AgentState.IDLE) return@Button
-                    resultText = null
-                    steps = emptyList()
-                    benchmarkSummary = null
-                    liveTokens = ""
-                    liveThoughtText = ""
-                    isLiveThoughtPrefilled = false
-                    isLiveThinking = false
-                    coroutineScope.launch {
-                        try {
-                            agentRunner.configureTools(
-                                agentPreferences.isCalculatorEnabled,
-                                agentPreferences.isDateTimeEnabled
-                            )
-                            val runResult = agentRunner.run(
-                                userPrompt = prompt,
-                                samplingConfig = AgentSamplingConfig(enablePrefixCache = isPrefixCacheEnabled),
-                                maxSteps = agentPreferences.maxSteps,
-                                systemPrompt = systemPrompt,
-                                enableThinking = isThinkingEnabled,
-                                thinkingBudget = thinkingBudget,
-                                disableStep1Thinking = isStep1ThinkingDisabled,
-                                enableDiagnostics = isDiagnosticsEnabled,
-                                onStepUpdate = { newStep ->
-                                    steps = steps + newStep
-                                    liveTokens = ""
-                                    liveThoughtText = ""
-                                    isLiveThoughtPrefilled = false
-                                    isLiveThinking = false
-                                },
-                                onToken = { token ->
-                                    liveTokens += token
-                                },
-                                onThoughtUpdate = { thought, isPrefilled, isThinking ->
-                                    liveThoughtText = thought
-                                    isLiveThoughtPrefilled = isPrefilled
-                                    isLiveThinking = isThinking
-                                }
-                            )
-                            resultText = when (runResult) {
-                                is AgentResult.Success -> runResult.finalAnswer
-                                is AgentResult.MaxStepsReached -> runResult.finalAnswer
-                                is AgentResult.ToolRetryLimitExceeded -> runResult.finalAnswer
-                                is AgentResult.ToolDuplicateDetected -> runResult.finalAnswer
-                                is AgentResult.Cancelled -> runResult.message
-                                is AgentResult.Error -> runResult.errorMessage
-                            }
-                            benchmarkSummary = runResult.benchmarkSummary
-                        } catch (e: CancellationException) {
-                            resultText = "Agent stopped by user"
-                        }
-                    }
-                },
-                enabled = agentState == AgentState.IDLE && isModelLoaded && prompt.isNotBlank(),
-                modifier = Modifier
-                    .weight(1f)
-                    .testTag("run_agent_button")
-            ) {
-                Icon(Icons.Filled.PlayArrow, contentDescription = null)
-                Spacer(Modifier.width(4.dp))
-                Text("Run Agent")
-            }
-
-            OutlinedButton(
-                onClick = {
-                    agentRunner.cancel()
-                },
-                enabled = isRunning,
-                colors = ButtonDefaults.outlinedButtonColors(
-                    contentColor = MaterialTheme.colorScheme.error
-                ),
-                modifier = Modifier.testTag("stop_agent_button")
-            ) {
-                if (isCancelling) {
-                    CircularProgressIndicator(
-                        modifier = Modifier.size(16.dp),
-                        strokeWidth = 2.dp,
-                        color = MaterialTheme.colorScheme.error
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    Text("Stopping...")
-                } else {
-                    Icon(Icons.Filled.Stop, contentDescription = null)
-                    Spacer(Modifier.width(4.dp))
-                    Text("Stop")
-                }
-            }
-        }
-
-        if ((isRunning || isCancelling) && (liveTokens.isNotBlank() || isLiveThinking || liveThoughtText.isNotBlank())) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
-            ) {
-                Column(Modifier.padding(12.dp)) {
-                    if (isLiveThinking || liveThoughtText.isNotBlank()) {
-                        Surface(
-                            shape = RoundedCornerShape(6.dp),
-                            color = MaterialTheme.colorScheme.surface.copy(alpha = 0.7f),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
-                            Column(Modifier.padding(8.dp)) {
-                                Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
-                                ) {
-                                    Text(
-                                        text = "🧠 Thinking",
-                                        style = MaterialTheme.typography.labelMedium,
-                                        fontWeight = FontWeight.Bold,
-                                        color = MaterialTheme.colorScheme.primary
-                                    )
-                                    if (isLiveThoughtPrefilled) {
-                                        Surface(
-                                            shape = RoundedCornerShape(3.dp),
-                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.8f)
-                                        ) {
-                                            Text(
-                                                text = "[Prefill] <think>",
-                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                        }
-                                    } else {
-                                        Surface(
-                                            shape = RoundedCornerShape(3.dp),
-                                            color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.5f)
-                                        ) {
-                                            Text(
-                                                text = "<think>",
-                                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
-                                                modifier = Modifier.padding(horizontal = 4.dp, vertical = 1.dp),
-                                                color = MaterialTheme.colorScheme.onSecondaryContainer
-                                            )
-                                        }
-                                    }
-                                    Spacer(Modifier.weight(1f))
-                                    Text(
-                                        text = if (isLiveThinking) "思考中..." else "思考完了",
-                                        style = MaterialTheme.typography.labelSmall,
-                                        color = if (isLiveThinking) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outline
-                                    )
-                                }
-
-                                if (liveThoughtText.isNotBlank()) {
-                                    Spacer(Modifier.height(4.dp))
-                                    Text(
-                                        text = liveThoughtText,
-                                        style = MaterialTheme.typography.bodySmall,
-                                        fontFamily = FontFamily.Monospace,
-                                        color = MaterialTheme.colorScheme.onSurface
-                                    )
-                                }
-                            }
-                        }
-
-                        val postThinkTokens = if (liveTokens.contains("</think>")) {
-                            liveTokens.substring(liveTokens.indexOf("</think>") + 8).trimStart('\n')
-                        } else ""
-
-                        if (postThinkTokens.isNotBlank()) {
-                            Spacer(Modifier.height(8.dp))
-                            Text(
-                                text = if (isCancelling) "停止処理中..." else "アクション / 回答生成中...",
-                                style = MaterialTheme.typography.labelSmall,
-                                color = if (isCancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
-                            )
-                            Spacer(Modifier.height(4.dp))
-                            Text(
-                                text = postThinkTokens,
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-                    } else {
+            .imePadding(),
+        topBar = {
+            TopAppBar(
+                title = {
+                    Column {
                         Text(
-                            text = if (isCancelling) "停止処理中..." else "推論中...",
-                            style = MaterialTheme.typography.labelSmall,
-                            color = if (isCancelling) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary
+                            text = "Agent Chat",
+                            style = MaterialTheme.typography.titleMedium,
+                            fontWeight = FontWeight.Bold
                         )
-                        Spacer(Modifier.height(4.dp))
+                        val displayModelName = when {
+                            modelName.isNotBlank() -> modelName
+                            isModelLoaded -> "Model Loaded"
+                            else -> "No Model"
+                        }
                         Text(
-                            text = liveTokens,
-                            style = MaterialTheme.typography.bodySmall,
-                            fontFamily = FontFamily.Monospace
+                            text = displayModelName,
+                            style = MaterialTheme.typography.bodySmall.copy(fontSize = 11.sp),
+                            color = if (isModelLoaded) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                }
-            }
-        }
-
-        // Benchmark Summary Card (Visible only when Benchmark Mode is ON and summary is available)
-        if (isBenchmarkMode && benchmarkSummary != null) {
-            val summary = benchmarkSummary!!
-            Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .testTag("agent_benchmark_summary_card"),
-                shape = RoundedCornerShape(10.dp),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.tertiaryContainer
-                )
-            ) {
-                Column(
-                    modifier = Modifier.padding(14.dp),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                },
+                navigationIcon = {
+                    if (onBack != null) {
+                        IconButton(
+                            onClick = onBack,
+                            modifier = Modifier.testTag("agent_back_button")
                         ) {
                             Icon(
-                                Icons.Filled.Speed,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.onTertiaryContainer,
-                                modifier = Modifier.size(20.dp)
-                            )
-                            Text(
-                                text = "Agent Benchmark Metrics",
-                                style = MaterialTheme.typography.titleMedium,
-                                fontWeight = FontWeight.Bold,
-                                color = MaterialTheme.colorScheme.onTertiaryContainer
+                                imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                                contentDescription = "戻る"
                             )
                         }
-
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(2.dp)
+                    } else if (onOpenDrawer != null) {
+                        IconButton(
+                            onClick = onOpenDrawer,
+                            modifier = Modifier.testTag("agent_drawer_button")
                         ) {
-                            BenchmarkCopyButton("全部", copiedSection == "all", "agent_benchmark_copy_button") {
-                                clipboardManager.setText(AnnotatedString(formatBenchmarkText(summary, steps, resultText, thinkingBudget)))
-                                copiedSection = "all"
-                                coroutineScope.launch { delay(2000); copiedSection = null }
-                            }
-                            BenchmarkCopyButton("推論", copiedSection == "thinking", "agent_benchmark_copy_thinking_button") {
-                                clipboardManager.setText(AnnotatedString(formatThinkingCopyText(steps)))
-                                copiedSection = "thinking"
-                                coroutineScope.launch { delay(2000); copiedSection = null }
-                            }
-                            BenchmarkCopyButton("本文", copiedSection == "answer", "agent_benchmark_copy_answer_button") {
-                                clipboardManager.setText(AnnotatedString(formatAnswerCopyText(steps, resultText)))
-                                copiedSection = "answer"
-                                coroutineScope.launch { delay(2000); copiedSection = null }
-                            }
+                            Icon(
+                                imageVector = Icons.Default.Menu,
+                                contentDescription = "Menu"
+                            )
                         }
                     }
-
-                    HorizontalDivider(color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.2f))
-
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween
+                },
+                actions = {
+                    IconButton(
+                        onClick = { showMoreMenu = true },
+                        modifier = Modifier.testTag("agent_more_menu_button")
                     ) {
-                        BenchmarkStatItem(
-                            label = "Total Time",
-                            value = "${formatMs(summary.totalTimeMs)} ms",
-                            subValue = String.format(Locale.US, "%.2f s", summary.totalTimeMs / 1000.0)
-                        )
-                        BenchmarkStatItem(
-                            label = "Steps",
-                            value = "${summary.stepCount} steps"
-                        )
-                        BenchmarkStatItem(
-                            label = "Prompt",
-                            value = "${summary.totalPromptTokens} tok"
-                        )
-                        BenchmarkStatItem(
-                            label = "Generated",
-                            value = "${summary.totalGenTokens} tok"
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "More"
                         )
                     }
 
-                    if (summary.totalToolTimeMs > 0.0) {
-                        Text(
-                            text = "Tool合計実行時間: ${formatMs(summary.totalToolTimeMs)} ms",
-                            style = MaterialTheme.typography.labelSmall,
-                            fontFamily = FontFamily.Monospace,
-                            color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
+                    DropdownMenu(
+                        expanded = showMoreMenu,
+                        onDismissRequest = { showMoreMenu = false }
+                    ) {
+                        DropdownMenuItem(
+                            text = { Text("Agent設定") },
+                            leadingIcon = {
+                                Icon(Icons.Default.Tune, contentDescription = null)
+                            },
+                            onClick = {
+                                showMoreMenu = false
+                                showSettingsDialog = true
+                            },
+                            modifier = Modifier.testTag("agent_menu_settings")
                         )
+                        if (messages.isNotEmpty()) {
+                            DropdownMenuItem(
+                                text = { Text("チャットをクリア") },
+                                leadingIcon = {
+                                    Icon(Icons.Default.DeleteOutline, contentDescription = null)
+                                },
+                                onClick = {
+                                    showMoreMenu = false
+                                    messages = emptyList()
+                                },
+                                modifier = Modifier.testTag("agent_menu_clear")
+                            )
+                        }
                     }
-                }
-            }
-        }
-
-        // Steps timeline
-        if (steps.isNotEmpty()) {
-            Text(
-                text = "実行ステップ履歴 (${steps.size} ステップ):",
-                style = MaterialTheme.typography.titleSmall,
-                fontWeight = FontWeight.Bold
+                },
+                colors = TopAppBarDefaults.topAppBarColors(
+                    containerColor = MaterialTheme.colorScheme.surface
+                )
             )
-
-            steps.forEach { step ->
-                Card(
-                    modifier = Modifier.fillMaxWidth(),
-                    shape = RoundedCornerShape(8.dp),
-                    colors = CardDefaults.cardColors(
-                        containerColor = if (step.isFinal) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant
-                    )
+        },
+        bottomBar = {
+            AgentChatInputBar(
+                text = inputText,
+                onTextChange = { inputText = it },
+                onSend = { handleSendMessage(inputText) },
+                isRunning = isRunning,
+                isCancelling = isCancelling,
+                onStop = { agentRunner.cancel() },
+                enabled = isModelLoaded
+            )
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .padding(padding)
+        ) {
+            if (messages.isEmpty()) {
+                AgentEmptyState(
+                    onSelectSuggestion = { suggestion ->
+                        inputText = suggestion
+                    }
+                )
+            } else {
+                LazyColumn(
+                    state = listState,
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .testTag("agent_chat_timeline"),
+                    contentPadding = PaddingValues(vertical = 8.dp)
                 ) {
-                    Column(
-                        modifier = Modifier.padding(12.dp),
-                        verticalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text(
-                                text = "Step ${step.stepNumber} ${if (step.isFinal) "(Final)" else ""}",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.labelLarge
-                            )
-                            if (step.toolCall != null) {
-                                Surface(
-                                    shape = RoundedCornerShape(4.dp),
-                                    color = MaterialTheme.colorScheme.secondaryContainer
-                                ) {
-                                    Row(
-                                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                        verticalAlignment = Alignment.CenterVertically
-                                    ) {
-                                        val icon = when (step.toolCall.toolName.lowercase()) {
-                                            "datetime" -> Icons.Filled.CalendarToday
-                                            else -> Icons.Filled.Calculate
-                                        }
-                                        Icon(icon, contentDescription = null, modifier = Modifier.size(14.dp))
-                                        Spacer(Modifier.width(4.dp))
-                                        Text(
-                                            text = step.toolCall.toolName,
-                                            style = MaterialTheme.typography.labelSmall
-                                        )
-                                    }
-                                }
-                            }
-                        }
+                    items(messages, key = { it.id }) { message ->
+                        AgentMessageBubble(message = message)
 
-                        // Thought block (collapsible)
-                        if (!step.thoughtText.isNullOrBlank()) {
-                            StepThoughtDisplay(
-                                thoughtText = step.thoughtText,
-                                isPrefilled = step.isThoughtPrefilled,
-                                isCompleted = step.isThoughtCompleted
-                            )
-                        }
-
-                        if (step.toolCall != null) {
-                            Text(
-                                text = "引数: ${step.toolCall.arguments}",
-                                style = MaterialTheme.typography.bodySmall,
-                                fontFamily = FontFamily.Monospace
-                            )
-                        }
-
-                        if (step.toolResult != null) {
-                            val isSuccess = step.toolResult.isSuccess
-                            Surface(
-                                shape = RoundedCornerShape(4.dp),
-                                color = if (isSuccess) MaterialTheme.colorScheme.tertiaryContainer else MaterialTheme.colorScheme.errorContainer,
-                                modifier = Modifier.fillMaxWidth()
+                        // If Benchmark Mode is enabled and this message has benchmark metrics, display summary card
+                        if (isBenchmarkMode && message.benchmarkSummary != null) {
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(horizontal = 14.dp, vertical = 6.dp)
                             ) {
-                                Text(
-                                    text = "結果: ${step.toolResult.text}",
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontFamily = FontFamily.Monospace,
-                                    modifier = Modifier.padding(8.dp)
+                                AgentBenchmarkCard(
+                                    summary = message.benchmarkSummary,
+                                    steps = message.steps,
+                                    resultText = message.text,
+                                    thinkingBudget = thinkingBudget
                                 )
                             }
                         }
-
-                        // Per-Step Benchmark Metrics (Displayed only when Benchmark Mode is ON)
-                        if (isBenchmarkMode && step.metrics != null) {
-                            val m = step.metrics
-                            HorizontalDivider(
-                                modifier = Modifier.padding(vertical = 4.dp),
-                                color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f)
-                            )
-                            StepMetricsDisplay(metrics = m)
-                        }
                     }
-                }
-            }
-        }
-
-        // Final Answer Card
-        if (resultText != null) {
-            Card(
-                modifier = Modifier.fillMaxWidth(),
-                colors = CardDefaults.cardColors(
-                    containerColor = MaterialTheme.colorScheme.primaryContainer
-                )
-            ) {
-                Column(Modifier.padding(16.dp)) {
-                    Text(
-                        text = "最終回答",
-                        fontWeight = FontWeight.Bold,
-                        style = MaterialTheme.typography.titleMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
-                    Spacer(Modifier.height(6.dp))
-                    Text(
-                        text = resultText ?: "",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = MaterialTheme.colorScheme.onPrimaryContainer
-                    )
                 }
             }
         }
@@ -675,23 +365,179 @@ fun AgentScreen(
             initialDiagnosticsEnabled = isDiagnosticsEnabled,
             initialStep1ThinkingDisabled = isStep1ThinkingDisabled,
             onDismiss = { showSettingsDialog = false },
-            onSave = { newPrompt, newThinking, newBudget, newBenchmarkMode, newPrefixCache, newDiagnostics, newStep1ThinkingDisabled ->
-                agentPreferences.systemPrompt = newPrompt
-                agentPreferences.isThinkingEnabled = newThinking
-                agentPreferences.thinkingBudget = newBudget
-                agentPreferences.isBenchmarkMode = newBenchmarkMode
-                agentPreferences.isPrefixCacheEnabled = newPrefixCache
-                agentPreferences.isDiagnosticsEnabled = newDiagnostics
-                agentPreferences.isStep1ThinkingDisabled = newStep1ThinkingDisabled
+            onSave = { newPrompt, thinking, budget, bench, prefixCache, diag, step1Disabled ->
                 systemPrompt = newPrompt
-                isThinkingEnabled = newThinking
-                thinkingBudget = newBudget
-                isBenchmarkMode = newBenchmarkMode
-                isPrefixCacheEnabled = newPrefixCache
-                isDiagnosticsEnabled = newDiagnostics
-                isStep1ThinkingDisabled = newStep1ThinkingDisabled
+                isThinkingEnabled = thinking
+                thinkingBudget = budget
+                isBenchmarkMode = bench
+                isPrefixCacheEnabled = prefixCache
+                isDiagnosticsEnabled = diag
+                isStep1ThinkingDisabled = step1Disabled
+
+                agentPreferences.systemPrompt = newPrompt
+                agentPreferences.isThinkingEnabled = thinking
+                agentPreferences.thinkingBudget = budget
+                agentPreferences.isBenchmarkMode = bench
+                agentPreferences.isPrefixCacheEnabled = prefixCache
+                agentPreferences.isDiagnosticsEnabled = diag
+                agentPreferences.isStep1ThinkingDisabled = step1Disabled
+
+                showSettingsDialog = false
             }
         )
+    }
+}
+
+@Composable
+private fun AgentBenchmarkCard(
+    summary: AgentBenchmarkSummary,
+    steps: List<AgentStep>,
+    resultText: String?,
+    thinkingBudget: Int,
+    modifier: Modifier = Modifier
+) {
+    val clipboardManager = LocalClipboardManager.current
+    val coroutineScope = rememberCoroutineScope()
+    var copiedSection by remember { mutableStateOf<String?>(null) }
+    var showStepDetails by rememberSaveable { mutableStateOf(false) }
+
+    Card(
+        modifier = modifier
+            .fillMaxWidth()
+            .testTag("agent_benchmark_summary_card"),
+        shape = RoundedCornerShape(10.dp),
+        colors = CardDefaults.cardColors(
+            containerColor = MaterialTheme.colorScheme.tertiaryContainer
+        )
+    ) {
+        Column(
+            modifier = Modifier.padding(14.dp),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    Icon(
+                        Icons.Filled.Speed,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier.size(20.dp)
+                    )
+                    Text(
+                        text = "Agent Benchmark Metrics",
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp)
+                ) {
+                    BenchmarkCopyButton("全部", copiedSection == "all", "agent_benchmark_copy_button") {
+                        clipboardManager.setText(AnnotatedString(formatBenchmarkText(summary, steps, resultText, thinkingBudget)))
+                        copiedSection = "all"
+                        coroutineScope.launch { delay(2000); copiedSection = null }
+                    }
+                    BenchmarkCopyButton("推論", copiedSection == "thinking", "agent_benchmark_copy_thinking_button") {
+                        clipboardManager.setText(AnnotatedString(formatThinkingCopyText(steps)))
+                        copiedSection = "thinking"
+                        coroutineScope.launch { delay(2000); copiedSection = null }
+                    }
+                    BenchmarkCopyButton("本文", copiedSection == "answer", "agent_benchmark_copy_answer_button") {
+                        clipboardManager.setText(AnnotatedString(formatAnswerCopyText(steps, resultText)))
+                        copiedSection = "answer"
+                        coroutineScope.launch { delay(2000); copiedSection = null }
+                    }
+                }
+            }
+
+            HorizontalDivider(color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.2f))
+
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                BenchmarkStatItem(
+                    label = "Total Time",
+                    value = "${formatMs(summary.totalTimeMs)} ms",
+                    subValue = String.format(Locale.US, "%.2f s", summary.totalTimeMs / 1000.0)
+                )
+                BenchmarkStatItem(
+                    label = "Steps",
+                    value = "${summary.stepCount} steps"
+                )
+                BenchmarkStatItem(
+                    label = "Prompt",
+                    value = "${summary.totalPromptTokens} tok"
+                )
+                BenchmarkStatItem(
+                    label = "Generated",
+                    value = "${summary.totalGenTokens} tok"
+                )
+            }
+
+            if (summary.totalToolTimeMs > 0.0) {
+                Text(
+                    text = "Tool合計実行時間: ${formatMs(summary.totalToolTimeMs)} ms",
+                    style = MaterialTheme.typography.labelSmall,
+                    fontFamily = FontFamily.Monospace,
+                    color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.85f)
+                )
+            }
+
+            // Step & Thinking details toggle if steps exist
+            if (steps.isNotEmpty()) {
+                HorizontalDivider(color = MaterialTheme.colorScheme.onTertiaryContainer.copy(alpha = 0.2f))
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clickable { showStepDetails = !showStepDetails },
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = if (showStepDetails) "Step / Thinking詳細を閉じる" else "Step / Thinking詳細を表示 (${steps.size} steps)",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onTertiaryContainer
+                    )
+                    Icon(
+                        imageVector = if (showStepDetails) Icons.Filled.ExpandLess else Icons.Filled.ExpandMore,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onTertiaryContainer,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
+
+                AnimatedVisibility(visible = showStepDetails) {
+                    Column(
+                        verticalArrangement = Arrangement.spacedBy(8.dp),
+                        modifier = Modifier.padding(top = 4.dp)
+                    ) {
+                        steps.forEach { step ->
+                            step.thoughtText?.takeIf { it.isNotBlank() }?.let { thought ->
+                                StepThoughtDisplay(
+                                    thoughtText = thought,
+                                    isPrefilled = step.isThoughtPrefilled,
+                                    isCompleted = step.isThoughtCompleted
+                                )
+                            }
+                            step.metrics?.let { metrics ->
+                                StepMetricsDisplay(metrics = metrics)
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -761,6 +607,7 @@ private fun StepMetricsDisplay(metrics: AgentStepMetrics) {
             } else {
                 "• Prompt: ${metrics.promptTokens} tok (${formatMs(metrics.promptTimeMs)} ms)"
             }
+
             Text(
                 text = promptDetail,
                 style = MaterialTheme.typography.bodySmall,
@@ -786,6 +633,7 @@ private fun StepMetricsDisplay(metrics: AgentStepMetrics) {
                 style = MaterialTheme.typography.bodySmall,
                 fontFamily = FontFamily.Monospace
             )
+
             val toolInfo = if (metrics.toolName != null) {
                 "${formatMs(metrics.toolExecutionTimeMs)} ms (${metrics.toolName})"
             } else {
@@ -848,7 +696,6 @@ private fun formatBenchmarkText(
     reasoningBudget: Int
 ): String {
     val sb = StringBuilder()
-
     sb.appendLine("=== Agent Benchmark Results ===")
     sb.appendLine("Total Time: ${String.format(Locale.US, "%.1f", summary.totalTimeMs)} ms (${String.format(Locale.US, "%.2f", summary.totalTimeMs / 1000.0)} s)")
     sb.appendLine("Steps: ${summary.stepCount}")
@@ -868,6 +715,7 @@ private fun formatBenchmarkText(
         } else {
             sb.appendLine("• Prompt: ${step.promptTokens} tok (${String.format(Locale.US, "%.1f", step.promptTimeMs)} ms)")
         }
+
         val stepLog = steps.firstOrNull { it.stepNumber == step.stepNumber }
         val analysis = stepLog?.let { analyzeGeneration(it) } ?: GenerationAnalysis(
             "UNKNOWN",
@@ -914,7 +762,6 @@ private fun formatBenchmarkText(
             sb.appendLine()
             sb.appendLine("[Raw LLM Output]")
             sb.appendLine(step.rawLlmOutput.ifBlank { "(empty)" })
-
             step.thoughtText?.takeIf { it.isNotBlank() }?.let { thought ->
                 sb.appendLine()
                 sb.appendLine("[Parsed Thought]")
@@ -922,14 +769,12 @@ private fun formatBenchmarkText(
                 sb.appendLine("[Thought Prefilled: ${step.isThoughtPrefilled}]")
                 sb.appendLine("[Thought Completed: ${step.isThoughtCompleted}]")
             }
-
             step.toolCall?.let { toolCall ->
                 sb.appendLine()
                 sb.appendLine("[Tool Call]")
                 sb.appendLine("Tool: ${toolCall.toolName}")
                 sb.appendLine("Arguments: ${toolCall.arguments}")
             }
-
             step.toolResult?.let { toolResult ->
                 sb.appendLine()
                 sb.appendLine("[Tool Result]")
@@ -938,11 +783,9 @@ private fun formatBenchmarkText(
             }
         }
     }
-
     sb.appendLine()
     sb.appendLine("=== Final Answer ===")
     sb.appendLine(finalAnswer?.ifBlank { "(empty)" } ?: "(none)")
-
     return sb.toString().trimEnd()
 }
 
@@ -965,6 +808,7 @@ private fun analyzeGeneration(step: AgentStep): GenerationAnalysis {
     val raw = step.rawLlmOutput
     val endIdx = raw.indexOf("</think>")
     val completed = step.isThoughtCompleted && endIdx >= 0
+
     return when {
         !completed && !step.thoughtText.isNullOrBlank() -> GenerationAnalysis(
             if ((step.metrics?.genTokens ?: 0) > 0) "MAX_TOKENS (推定)" else "NO_GENERATION",
@@ -1002,20 +846,33 @@ private fun formatAnswerCopyText(steps: List<AgentStep>, finalAnswer: String?): 
             appendLine(answer)
         }
     }
+    sbEndLine(finalAnswer)
+}.trimEnd()
+
+private fun StringBuilder.sbEndLine(finalAnswer: String?) {
     appendLine()
     appendLine("=== Final Answer ===")
     appendLine(finalAnswer?.ifBlank { "(empty)" } ?: "(none)")
-}.trimEnd()
+}
 
 @Composable
 private fun BenchmarkCopyButton(label: String, selected: Boolean, testTag: String, onClick: () -> Unit) {
     AssistChip(
         onClick = onClick,
         label = { Text(if (selected) "✓ $label" else label, fontSize = 10.sp) },
-        leadingIcon = { Icon(if (selected) Icons.Filled.Check else Icons.Filled.ContentCopy, contentDescription = null, modifier = Modifier.size(14.dp)) },
-        modifier = Modifier.height(30.dp).testTag(testTag)
+        leadingIcon = {
+            Icon(
+                if (selected) Icons.Filled.Check else Icons.Filled.ContentCopy,
+                contentDescription = null,
+                modifier = Modifier.size(14.dp)
+            )
+        },
+        modifier = Modifier
+            .height(30.dp)
+            .testTag(testTag)
     )
 }
+
 @Composable
 private fun StepThoughtDisplay(
     thoughtText: String,
@@ -1072,6 +929,7 @@ private fun StepThoughtDisplay(
                         }
                     }
                 }
+
                 Row(
                     verticalAlignment = Alignment.CenterVertically,
                     horizontalArrangement = Arrangement.spacedBy(4.dp)
