@@ -112,7 +112,8 @@ fun AdvancedSettingsScreen(
                 onClick = {
                     onApply(debugLogging, logLevel, experimentalFeatures)
                     showSavedSnackbar = true
-                }
+                },
+                modifier = Modifier.navigationBarsPadding()
             )
         },
         snackbarHost = { SnackbarHost(snackbarHostState) }
