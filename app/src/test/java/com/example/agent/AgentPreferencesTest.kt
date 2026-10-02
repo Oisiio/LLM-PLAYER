@@ -125,7 +125,7 @@ class AgentPreferencesTest {
 
         agentPreferences.isStep1ThinkingDisabled = true
         assertTrue(agentPreferences.isStep1ThinkingDisabled)
-        assertEquals(true, fakePrefs.getBoolean(AgentPreferences.KEY_STEP1_THINKING_DISABLED, false))
+        assertEquals(false, fakePrefs.getBoolean(AgentPreferences.KEY_STEP1_THINKING_DISABLED, true))
     }
 
     @Test
