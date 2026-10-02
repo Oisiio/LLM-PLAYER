@@ -66,7 +66,7 @@ class AgentPreferences(
         }
 
     var isStep1ThinkingDisabled: Boolean
-        get() = prefs.getBoolean(KEY_STEP1_THINKING_DISABLED, true)
+        get() = prefs.getBoolean(KEY_STEP1_THINKING_DISABLED, false)
         set(value) {
             prefs.edit().putBoolean(KEY_STEP1_THINKING_DISABLED, value).apply()
         }
@@ -87,7 +87,7 @@ class AgentPreferences(
         isBenchmarkMode = false
         isPrefixCacheEnabled = true
         isDiagnosticsEnabled = false
-        isStep1ThinkingDisabled = true
+        isStep1ThinkingDisabled = false
     }
 
     companion object {
