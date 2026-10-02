@@ -25,7 +25,6 @@ fun GeneralSettingsScreen(
     modifier: Modifier = Modifier
 ) {
     var viewMode by remember { mutableStateOf(currentViewMode) }
-    var showSavedSnackbar by remember { mutableStateOf(false) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val viewModeOptions = listOf(
@@ -44,30 +43,15 @@ fun GeneralSettingsScreen(
                 onBack = onBack
             )
         },
-        bottomBar = {
-            LlmApplyBottomBar(
-                text = "✓ 変更を適用",
-                onClick = {
-                    onApply(viewMode)
-                    showSavedSnackbar = true
-                }
-            )
-        },
         snackbarHost = { SnackbarHost(snackbarHostState) }
     ) { padding ->
-        LaunchedEffect(showSavedSnackbar) {
-            if (showSavedSnackbar) {
-                snackbarHostState.showSnackbar("General設定を適用しました")
-                showSavedSnackbar = false
-            }
-        }
-
         Column(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding)
                 .verticalScroll(rememberScrollState())
-                .padding(horizontal = 20.dp, vertical = 16.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp)
+                .navigationBarsPadding(),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
             // Intro
@@ -84,7 +68,10 @@ fun GeneralSettingsScreen(
                 LlmOptionGrid(
                     options = viewModeOptions,
                     selected = viewMode,
-                    onSelect = { viewMode = it },
+                    onSelect = {
+                        viewMode = it
+                        onApply(it)
+                    },
                     columns = 2
                 )
             }

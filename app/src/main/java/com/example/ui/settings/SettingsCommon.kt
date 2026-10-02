@@ -361,7 +361,9 @@ fun LlmApplyBottomBar(
     modifier: Modifier = Modifier
 ) {
     Surface(
-        modifier = modifier.fillMaxWidth(),
+        modifier = modifier
+            .fillMaxWidth()
+            .navigationBarsPadding(),
         color = LlmBackground,
         border = androidx.compose.foundation.BorderStroke(1.dp, LlmBorder)
     ) {
