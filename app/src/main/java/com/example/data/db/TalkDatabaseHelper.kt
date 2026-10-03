@@ -57,6 +57,31 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
         const val COL_MSG_TIMESTAMP = "timestamp"
         const val COL_MSG_CANDIDATES = "candidates_json"
         const val COL_MSG_SELECTED_CANDIDATE = "selected_candidate_index"
+
+        internal fun listToJson(list: List<String>): String {
+            val a = JSONArray()
+            list.forEach { a.put(it) }
+            return a.toString()
+        }
+
+        internal fun jsonToList(s: String?): List<String> {
+            if (s == null) return emptyList()
+            val trimmed = s.trim()
+            if (trimmed.isEmpty() || trimmed == "[]") return emptyList()
+            return try {
+                val a = JSONArray(trimmed)
+                val list = mutableListOf<String>()
+                for (i in 0 until a.length()) {
+                    val item = a.optString(i, "").trim()
+                    if (item.isNotEmpty()) {
+                        list.add(item)
+                    }
+                }
+                list
+            } catch (_: Exception) {
+                emptyList()
+            }
+        }
     }
 
     override fun onConfigure(db: SQLiteDatabase) {
@@ -553,24 +578,6 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
     }
 
     private fun jsonToCandidates(s: String?): List<String> {
-        if (s.isNullOrBlank()) return emptyList()
-        return try {
-            val a = JSONArray(s)
-            val list = mutableListOf<String>()
-            for (i in 0 until a.length()) {
-                list.add(a.optString(i))
-            }
-            list
-        } catch (e: Exception) { emptyList() }
-    }
-
-    private fun listToJson(list: List<String>): String {
-        val a = JSONArray()
-        list.forEach { a.put(it) }
-        return a.toString()
-    }
-
-    private fun jsonToList(s: String?): List<String> {
         if (s.isNullOrBlank()) return emptyList()
         return try {
             val a = JSONArray(s)

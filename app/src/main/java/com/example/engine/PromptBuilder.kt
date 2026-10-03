@@ -7,6 +7,10 @@ import com.example.data.model.MessageRole
 
 object PromptBuilder {
 
+    /**
+     * Context overflow を防ぐための保守的なトークン数概算（ヒューリスティック推定）。
+     * ※厳密な BPE / SentencePiece Tokenizer ではなく、安全域を確保した予算管理用です。
+     */
     fun estimateTokens(text: String): Int {
         var cjk = 0
         var other = 0

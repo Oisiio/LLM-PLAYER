@@ -1,5 +1,6 @@
 package com.example.talk
 
+import com.example.data.db.TalkDatabaseHelper
 import com.example.data.importer.CharacterCardImporter
 import com.example.data.importer.CharacterImportResult
 import com.example.data.importer.PngMetadataExtractor
@@ -11,6 +12,62 @@ import java.io.ByteArrayOutputStream
 import java.util.zip.CRC32
 
 class CharacterCardImporterTest {
+
+    @Test
+    fun testTalkDatabaseHelper_alternateGreetingsJson_safety() {
+        // 1. null input
+        assertEquals(emptyList<String>(), TalkDatabaseHelper.jsonToList(null))
+
+        // 2. empty string
+        assertEquals(emptyList<String>(), TalkDatabaseHelper.jsonToList(""))
+
+        // 3. blank whitespace string
+        assertEquals(emptyList<String>(), TalkDatabaseHelper.jsonToList("   "))
+
+        // 4. empty JSON array string
+        assertEquals(emptyList<String>(), TalkDatabaseHelper.jsonToList("[]"))
+
+        // 5. valid JSON array
+        val validJson = """["こんにちは！", "初めまして、よろしくお願いします。"]"""
+        val parsed = TalkDatabaseHelper.jsonToList(validJson)
+        assertEquals(2, parsed.size)
+        assertEquals("こんにちは！", parsed[0])
+        assertEquals("初めまして、よろしくお願いします。", parsed[1])
+
+        // 6. malformed JSON string (fallback to emptyList without throwing)
+        assertEquals(emptyList<String>(), TalkDatabaseHelper.jsonToList("{not-an-array}"))
+
+        // 7. listToJson with emptyList produces "[]"
+        assertEquals("[]", TalkDatabaseHelper.listToJson(emptyList()))
+    }
+
+    @Test
+    fun testImport_legacyCharacterJson_populatesDefaults() {
+        val legacyJson = """
+        {
+          "format": "llm-player-character",
+          "version": 1,
+          "character": {
+            "name": "レガシーキャラ",
+            "personality": { "presets": ["優しい"], "custom": "" },
+            "style": { "presets": ["丁寧語"], "custom": "" },
+            "system_prompt": { "template": null, "custom": "旧プロンプト" },
+            "first_message": "旧挨拶",
+            "scenario": { "template": null, "content": "旧シチュエーション" },
+            "example_dialogue": { "structured": [], "freeform": "" }
+          }
+        }
+        """.trimIndent()
+
+        val result = CharacterJsonConverter.fromJson(legacyJson)
+        assertTrue(result is CharacterJsonConverter.ValidationResult.Success)
+        val char = (result as CharacterJsonConverter.ValidationResult.Success).character
+
+        assertEquals("レガシーキャラ", char.name)
+        assertEquals("", char.description)
+        assertEquals(emptyList<String>(), char.alternateGreetings)
+        assertEquals("", char.postHistoryInstructions)
+    }
 
     @Test
     fun testImport_CharacterCardV2_success() {
