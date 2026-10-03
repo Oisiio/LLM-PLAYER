@@ -334,13 +334,18 @@ class TalkViewModel(
             penaltyLastN = repository.getDefaultPenaltyLastN()
         )
         repository.saveChat(chat)
-        // 初期の「最初の文章」があればメッセージとして投入
-        if (character.firstMessage.isNotBlank()) {
+        // 初期の「最初の文章」や「挨拶候補」があればメッセージとして投入
+        val allGreetings = buildList {
+            if (character.firstMessage.isNotBlank()) add(character.firstMessage)
+            addAll(character.alternateGreetings.filter { it.isNotBlank() })
+        }
+        if (allGreetings.isNotEmpty()) {
+            val initialCandidates = allGreetings.take(3)
             val firstMsg = Message(
                 chatId = chat.id,
                 role = MessageRole.CHARACTER,
-                content = character.firstMessage,
-                candidates = listOf(character.firstMessage),
+                content = initialCandidates.first(),
+                candidates = initialCandidates,
                 selectedCandidateIndex = 0
             )
             repository.saveMessage(firstMsg)
@@ -461,7 +466,9 @@ class TalkViewModel(
 
             // Build Prompt
             val history = repository.getMessagesForChat(chat.id).filter { it.id != targetMessage.id }
-            val prompt = PromptBuilder.buildPrompt(character, history, userInput)
+            val contextSize = repository.getDefaultContextSize()
+            val maxOutputTokens = repository.getDefaultMaxOutputTokens()
+            val prompt = PromptBuilder.buildPrompt(character, history, userInput, contextSize, maxOutputTokens)
 
             val textAccumulator = StringBuilder()
             val finalResult = withContext(Dispatchers.Default) {

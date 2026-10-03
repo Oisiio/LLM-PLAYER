@@ -53,7 +53,8 @@ fun ChatScreen(
     onSaveChatSettings: (Chat) -> Unit,
     onBack: () -> Unit,
     onStopGeneration: () -> Unit = {},
-    undoDeletedMessages: (() -> Unit)? = null
+    undoDeletedMessages: (() -> Unit)? = null,
+    modifier: Modifier = Modifier
 ) {
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
@@ -225,6 +226,7 @@ fun ChatScreen(
     }
 
     Scaffold(
+        modifier = modifier.fillMaxSize(),
         snackbarHost = { SnackbarHost(snackbarHostState) },
         topBar = {
             TopAppBar(

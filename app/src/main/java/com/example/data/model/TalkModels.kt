@@ -41,13 +41,16 @@ data class ExampleDialogueData(
 data class Character(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
+    val description: String = "",
     val iconUri: String? = null,
     val personality: PersonalityData = PersonalityData(),
     val style: StyleData = StyleData(),
     val systemPrompt: SystemPromptData = SystemPromptData(),
     val firstMessage: String = "",
+    val alternateGreetings: List<String> = emptyList(),
     val scenario: ScenarioData = ScenarioData(),
     val exampleDialogue: ExampleDialogueData = ExampleDialogueData(),
+    val postHistoryInstructions: String = "",
     val isFavorite: Boolean = false,
     val lastUsedAt: Long = System.currentTimeMillis()
 )
@@ -103,6 +106,7 @@ object CharacterJsonConverter {
 
         val charObj = JSONObject()
         charObj.put("name", character.name)
+        charObj.put("description", character.description)
 
         val persObj = JSONObject()
         val persPresets = JSONArray()
@@ -129,6 +133,10 @@ object CharacterJsonConverter {
 
         charObj.put("first_message", character.firstMessage)
 
+        val altArr = JSONArray()
+        character.alternateGreetings.forEach { altArr.put(it) }
+        charObj.put("alternate_greetings", altArr)
+
         val scnObj = JSONObject()
         if (character.scenario.template != null) {
             scnObj.put("template", character.scenario.template)
@@ -149,6 +157,8 @@ object CharacterJsonConverter {
         exObj.put("structured", structuredArr)
         exObj.put("freeform", character.exampleDialogue.freeform.take(1000))
         charObj.put("example_dialogue", exObj)
+
+        charObj.put("post_history_instructions", character.postHistoryInstructions)
 
         root.put("character", charObj)
         return root.toString(2)
@@ -190,6 +200,8 @@ object CharacterJsonConverter {
             return ValidationResult.Error("Character名 (\"name\") は最大50文字です。(現在: ${name.length}文字)")
         }
 
+        val description = charObj.optString("description", "")
+
         // personality
         val persObj = charObj.optJSONObject("personality")
         val persPresets = mutableListOf<String>()
@@ -224,6 +236,14 @@ object CharacterJsonConverter {
         }
 
         val firstMessage = charObj.optString("first_message", "")
+        val altGreetingsList = mutableListOf<String>()
+        val altArr = charObj.optJSONArray("alternate_greetings")
+        if (altArr != null) {
+            for (i in 0 until altArr.length()) {
+                val g = altArr.optString(i, "").trim()
+                if (g.isNotEmpty()) altGreetingsList.add(g)
+            }
+        }
 
         // scenario
         val scnObj = charObj.optJSONObject("scenario")
@@ -258,16 +278,21 @@ object CharacterJsonConverter {
             }
         }
 
+        val postHistoryInstructions = charObj.optString("post_history_instructions", "")
+
         val character = Character(
             id = UUID.randomUUID().toString(),
             name = name,
+            description = description,
             iconUri = null,
             personality = PersonalityData(persPresets, persCustom),
             style = StyleData(stylePresets, styleCustom),
             systemPrompt = SystemPromptData(sysTemplate, sysCustom),
             firstMessage = firstMessage,
+            alternateGreetings = altGreetingsList,
             scenario = ScenarioData(scnTemplate, scnContent),
             exampleDialogue = ExampleDialogueData(structuredList, freeform),
+            postHistoryInstructions = postHistoryInstructions,
             isFavorite = false,
             lastUsedAt = System.currentTimeMillis()
         )

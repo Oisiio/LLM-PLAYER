@@ -17,8 +17,9 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import com.example.data.importer.CharacterCardImporter
+import com.example.data.importer.CharacterImportResult
 import com.example.data.model.Character
-import com.example.data.model.CharacterJsonConverter
 import com.example.ui.talk.components.AvatarView
 
 @Composable
@@ -28,28 +29,29 @@ fun CharacterImportDialog(
     onImportConfirmed: (character: Character, overwriteExisting: Boolean, imageUri: Uri?) -> Unit
 ) {
     val context = LocalContext.current
-    var jsonContent by remember { mutableStateOf<String?>(null) }
     var parsedCharacter by remember { mutableStateOf<Character?>(null) }
     var validationError by remember { mutableStateOf<String?>(null) }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
 
     var showConflictDialog by remember { mutableStateOf(false) }
 
-    val jsonPickerLauncher = rememberLauncherForActivityResult(
+    val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         if (uri != null) {
             try {
-                val content = context.contentResolver.openInputStream(uri)?.use { stream ->
-                    stream.bufferedReader().readText()
-                } ?: ""
-                jsonContent = content
-                when (val result = CharacterJsonConverter.fromJson(content)) {
-                    is CharacterJsonConverter.ValidationResult.Success -> {
+                val bytes = context.contentResolver.openInputStream(uri)?.use { stream ->
+                    stream.readBytes()
+                } ?: ByteArray(0)
+                when (val result = CharacterCardImporter.importFromBytes(bytes)) {
+                    is CharacterImportResult.Success -> {
                         parsedCharacter = result.character
                         validationError = null
+                        if (result.imageBytes != null) {
+                            selectedImageUri = uri
+                        }
                     }
-                    is CharacterJsonConverter.ValidationResult.Error -> {
+                    is CharacterImportResult.Error -> {
                         parsedCharacter = null
                         validationError = result.message
                     }
@@ -89,7 +91,6 @@ fun CharacterImportDialog(
                     TextButton(
                         onClick = {
                             showConflictDialog = false
-                            // 別名で追加
                             val newName = "${parsedCharacter!!.name} (Imported)"
                             val renamed = parsedCharacter!!.copy(name = newName.take(50))
                             onImportConfirmed(renamed, false, selectedImageUri)
@@ -108,7 +109,7 @@ fun CharacterImportDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        title = { Text("Character Import (JSON)", fontWeight = FontWeight.Bold) },
+        title = { Text("Character Import (JSON / PNG)", fontWeight = FontWeight.Bold) },
         text = {
             Column(
                 modifier = Modifier
@@ -117,18 +118,22 @@ fun CharacterImportDialog(
                 verticalArrangement = Arrangement.spacedBy(12.dp)
             ) {
                 Text(
-                    "指定のCharacter JSON形式のファイルを選択してください。",
+                    "Character Card (V2 JSON / PNG) または LLM-PLAYER形式のファイルを選択してください。",
                     style = MaterialTheme.typography.bodySmall
                 )
 
-                // JSON File Picker Button
+                // File Picker Button
                 OutlinedButton(
-                    onClick = { jsonPickerLauncher.launch(arrayOf("application/json", "text/*")) },
+                    onClick = {
+                        filePickerLauncher.launch(
+                            arrayOf("application/json", "image/png", "image/*", "text/*", "*/*")
+                        )
+                    },
                     modifier = Modifier.fillMaxWidth().testTag("pick_json_button")
                 ) {
                     Icon(Icons.Default.Description, null)
                     Spacer(Modifier.width(8.dp))
-                    Text(if (parsedCharacter != null) "JSON選択済み: ${parsedCharacter!!.name}" else "JSONファイルを選択")
+                    Text(if (parsedCharacter != null) "ファイル選択済み: ${parsedCharacter!!.name}" else "ファイルを選択 (JSON / PNG)")
                 }
 
                 if (validationError != null) {
@@ -137,7 +142,7 @@ fun CharacterImportDialog(
                         modifier = Modifier.fillMaxWidth()
                     ) {
                         Text(
-                            text = "【バリデーションエラー】\n$validationError",
+                            text = "【インポートエラー】\n$validationError",
                             color = MaterialTheme.colorScheme.onErrorContainer,
                             style = MaterialTheme.typography.bodySmall,
                             modifier = Modifier.padding(10.dp)
@@ -153,11 +158,20 @@ fun CharacterImportDialog(
                         Column(Modifier.padding(12.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("【解析結果】", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.labelLarge)
                             Text("名前: ${parsedCharacter!!.name}")
+                            if (parsedCharacter!!.description.isNotBlank()) {
+                                Text("説明: ${parsedCharacter!!.description}", style = MaterialTheme.typography.bodySmall)
+                            }
                             if (parsedCharacter!!.personality.presets.isNotEmpty() || parsedCharacter!!.personality.custom.isNotBlank()) {
                                 Text("性格: ${parsedCharacter!!.personality.presets.joinToString(", ")} ${parsedCharacter!!.personality.custom}", style = MaterialTheme.typography.bodySmall)
                             }
                             if (parsedCharacter!!.firstMessage.isNotBlank()) {
                                 Text("最初の文章: ${parsedCharacter!!.firstMessage}", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (parsedCharacter!!.alternateGreetings.isNotEmpty()) {
+                                Text("挨拶候補: ${parsedCharacter!!.alternateGreetings.size}件", style = MaterialTheme.typography.bodySmall)
+                            }
+                            if (parsedCharacter!!.postHistoryInstructions.isNotBlank()) {
+                                Text("追加指示: ${parsedCharacter!!.postHistoryInstructions}", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
@@ -207,3 +221,4 @@ fun CharacterImportDialog(
         }
     )
 }
+

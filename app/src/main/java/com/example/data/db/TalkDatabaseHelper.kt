@@ -13,19 +13,22 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
 
     companion object {
         const val DATABASE_NAME = "llm_player_talk.db"
-        const val DATABASE_VERSION = 1
+        const val DATABASE_VERSION = 2
 
         // Table Characters
         const val TABLE_CHARACTERS = "characters"
         const val COL_CHAR_ID = "id"
         const val COL_CHAR_NAME = "name"
+        const val COL_CHAR_DESCRIPTION = "description"
         const val COL_CHAR_ICON_URI = "icon_uri"
         const val COL_CHAR_PERSONALITY = "personality_json"
         const val COL_CHAR_STYLE = "style_json"
         const val COL_CHAR_SYSTEM_PROMPT = "system_prompt_json"
         const val COL_CHAR_FIRST_MESSAGE = "first_message"
+        const val COL_CHAR_ALTERNATE_GREETINGS = "alternate_greetings_json"
         const val COL_CHAR_SCENARIO = "scenario_json"
         const val COL_CHAR_EXAMPLE_DIALOGUE = "example_dialogue_json"
+        const val COL_CHAR_POST_HISTORY_INSTRUCTIONS = "post_history_instructions"
         const val COL_CHAR_IS_FAVORITE = "is_favorite"
         const val COL_CHAR_LAST_USED_AT = "last_used_at"
 
@@ -67,13 +70,16 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
             CREATE TABLE $TABLE_CHARACTERS (
                 $COL_CHAR_ID TEXT PRIMARY KEY,
                 $COL_CHAR_NAME TEXT NOT NULL,
+                $COL_CHAR_DESCRIPTION TEXT DEFAULT '',
                 $COL_CHAR_ICON_URI TEXT,
                 $COL_CHAR_PERSONALITY TEXT,
                 $COL_CHAR_STYLE TEXT,
                 $COL_CHAR_SYSTEM_PROMPT TEXT,
                 $COL_CHAR_FIRST_MESSAGE TEXT,
+                $COL_CHAR_ALTERNATE_GREETINGS TEXT,
                 $COL_CHAR_SCENARIO TEXT,
                 $COL_CHAR_EXAMPLE_DIALOGUE TEXT,
+                $COL_CHAR_POST_HISTORY_INSTRUCTIONS TEXT DEFAULT '',
                 $COL_CHAR_IS_FAVORITE INTEGER DEFAULT 0,
                 $COL_CHAR_LAST_USED_AT INTEGER
             )
@@ -122,7 +128,11 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
     }
 
     override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) {
-        // Safe migration strategy if needed in future
+        if (oldVersion < 2) {
+            db.execSQL("ALTER TABLE $TABLE_CHARACTERS ADD COLUMN $COL_CHAR_DESCRIPTION TEXT DEFAULT ''")
+            db.execSQL("ALTER TABLE $TABLE_CHARACTERS ADD COLUMN $COL_CHAR_ALTERNATE_GREETINGS TEXT DEFAULT ''")
+            db.execSQL("ALTER TABLE $TABLE_CHARACTERS ADD COLUMN $COL_CHAR_POST_HISTORY_INSTRUCTIONS TEXT DEFAULT ''")
+        }
     }
 
     // ==================== Characters CRUD ====================
@@ -132,13 +142,16 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
         val cv = ContentValues().apply {
             put(COL_CHAR_ID, character.id)
             put(COL_CHAR_NAME, character.name)
+            put(COL_CHAR_DESCRIPTION, character.description)
             put(COL_CHAR_ICON_URI, character.iconUri)
             put(COL_CHAR_PERSONALITY, personalityToJson(character.personality))
             put(COL_CHAR_STYLE, styleToJson(character.style))
             put(COL_CHAR_SYSTEM_PROMPT, systemPromptToJson(character.systemPrompt))
             put(COL_CHAR_FIRST_MESSAGE, character.firstMessage)
+            put(COL_CHAR_ALTERNATE_GREETINGS, listToJson(character.alternateGreetings))
             put(COL_CHAR_SCENARIO, scenarioToJson(character.scenario))
             put(COL_CHAR_EXAMPLE_DIALOGUE, exampleDialogueToJson(character.exampleDialogue))
+            put(COL_CHAR_POST_HISTORY_INSTRUCTIONS, character.postHistoryInstructions)
             put(COL_CHAR_IS_FAVORITE, if (character.isFavorite) 1 else 0)
             put(COL_CHAR_LAST_USED_AT, character.lastUsedAt)
         }
@@ -366,16 +379,28 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
     // ==================== Helpers / Converters ====================
 
     private fun cursorToCharacter(c: Cursor): Character {
+        val descIdx = c.getColumnIndex(COL_CHAR_DESCRIPTION)
+        val description = if (descIdx >= 0) c.getString(descIdx) ?: "" else ""
+
+        val altIdx = c.getColumnIndex(COL_CHAR_ALTERNATE_GREETINGS)
+        val alternateGreetings = if (altIdx >= 0) jsonToList(c.getString(altIdx)) else emptyList()
+
+        val phiIdx = c.getColumnIndex(COL_CHAR_POST_HISTORY_INSTRUCTIONS)
+        val postHistoryInstructions = if (phiIdx >= 0) c.getString(phiIdx) ?: "" else ""
+
         return Character(
             id = c.getString(c.getColumnIndexOrThrow(COL_CHAR_ID)),
             name = c.getString(c.getColumnIndexOrThrow(COL_CHAR_NAME)),
+            description = description,
             iconUri = c.getString(c.getColumnIndexOrThrow(COL_CHAR_ICON_URI)),
             personality = jsonToPersonality(c.getString(c.getColumnIndexOrThrow(COL_CHAR_PERSONALITY))),
             style = jsonToStyle(c.getString(c.getColumnIndexOrThrow(COL_CHAR_STYLE))),
             systemPrompt = jsonToSystemPrompt(c.getString(c.getColumnIndexOrThrow(COL_CHAR_SYSTEM_PROMPT))),
             firstMessage = c.getString(c.getColumnIndexOrThrow(COL_CHAR_FIRST_MESSAGE)) ?: "",
+            alternateGreetings = alternateGreetings,
             scenario = jsonToScenario(c.getString(c.getColumnIndexOrThrow(COL_CHAR_SCENARIO))),
             exampleDialogue = jsonToExampleDialogue(c.getString(c.getColumnIndexOrThrow(COL_CHAR_EXAMPLE_DIALOGUE))),
+            postHistoryInstructions = postHistoryInstructions,
             isFavorite = c.getInt(c.getColumnIndexOrThrow(COL_CHAR_IS_FAVORITE)) == 1,
             lastUsedAt = c.getLong(c.getColumnIndexOrThrow(COL_CHAR_LAST_USED_AT))
         )
@@ -528,6 +553,24 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
     }
 
     private fun jsonToCandidates(s: String?): List<String> {
+        if (s.isNullOrBlank()) return emptyList()
+        return try {
+            val a = JSONArray(s)
+            val list = mutableListOf<String>()
+            for (i in 0 until a.length()) {
+                list.add(a.optString(i))
+            }
+            list
+        } catch (e: Exception) { emptyList() }
+    }
+
+    private fun listToJson(list: List<String>): String {
+        val a = JSONArray()
+        list.forEach { a.put(it) }
+        return a.toString()
+    }
+
+    private fun jsonToList(s: String?): List<String> {
         if (s.isNullOrBlank()) return emptyList()
         return try {
             val a = JSONArray(s)

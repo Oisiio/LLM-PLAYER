@@ -29,6 +29,7 @@ fun CharacterEditorScreen(
     onBack: () -> Unit
 ) {
     var name by remember { mutableStateOf(character?.name ?: "") }
+    var description by remember { mutableStateOf(character?.description ?: "") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var currentIconUri by remember { mutableStateOf(character?.iconUri) }
 
@@ -58,6 +59,14 @@ fun CharacterEditorScreen(
 
     // First Message
     var firstMessage by remember { mutableStateOf(character?.firstMessage ?: "") }
+    var alternateGreetings by remember {
+        mutableStateOf(character?.alternateGreetings ?: emptyList())
+    }
+
+    // Post History Instructions
+    var postHistoryInstructions by remember {
+        mutableStateOf(character?.postHistoryInstructions ?: "")
+    }
 
     // Scenario
     val scenarioTemplates = listOf(
@@ -110,12 +119,15 @@ fun CharacterEditorScreen(
                             }
                             val updated = (character ?: Character(name = trimmedName)).copy(
                                 name = trimmedName,
+                                description = description.trim(),
                                 personality = PersonalityData(selectedPersonalityPresets.toList(), personalityCustom),
                                 style = StyleData(selectedStylePresets.toList(), styleCustom),
                                 systemPrompt = SystemPromptData(null, systemPromptCustom),
                                 firstMessage = firstMessage,
+                                alternateGreetings = alternateGreetings.map { it.trim() }.filter { it.isNotEmpty() },
                                 scenario = ScenarioData(null, scenarioContent),
                                 exampleDialogue = ExampleDialogueData(structuredDialogue.take(10), freeformDialogue.take(1000)),
+                                postHistoryInstructions = postHistoryInstructions.trim(),
                                 lastUsedAt = System.currentTimeMillis()
                             )
                             onSave(updated, selectedImageUri)
@@ -186,6 +198,17 @@ fun CharacterEditorScreen(
                 )
             }
 
+            // 説明・設定 (Description)
+            Text("説明・設定 (Description)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            OutlinedTextField(
+                value = description,
+                onValueChange = { description = it },
+                placeholder = { Text("例: 高校生の少女。読書が好きで、少し人見知り。") },
+                modifier = Modifier.fillMaxWidth().testTag("editor_description_input"),
+                minLines = 2,
+                maxLines = 5
+            )
+
             HorizontalDivider()
 
             // 最初の文章
@@ -197,6 +220,54 @@ fun CharacterEditorScreen(
                 modifier = Modifier.fillMaxWidth().testTag("editor_first_message_input"),
                 minLines = 2
             )
+
+            // 挨拶候補 (Alternate Greetings)
+            Text("挨拶候補 (Alternate Greetings)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "新規Chat作成時の挨拶バリエーションです。Chat画面で候補を切り替えられます。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            alternateGreetings.forEachIndexed { index, greeting ->
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 2.dp)
+                ) {
+                    OutlinedTextField(
+                        value = greeting,
+                        onValueChange = { newText ->
+                            val list = alternateGreetings.toMutableList()
+                            list[index] = newText
+                            alternateGreetings = list
+                        },
+                        placeholder = { Text("挨拶候補 ${index + 1}") },
+                        modifier = Modifier.weight(1f).testTag("editor_alternate_greeting_$index"),
+                        maxLines = 3
+                    )
+                    IconButton(
+                        onClick = {
+                            val list = alternateGreetings.toMutableList()
+                            list.removeAt(index)
+                            alternateGreetings = list
+                        },
+                        modifier = Modifier.testTag("editor_delete_greeting_$index")
+                    ) {
+                        Icon(Icons.Default.Delete, "削除", tint = MaterialTheme.colorScheme.error)
+                    }
+                }
+            }
+            if (alternateGreetings.size < 10) {
+                OutlinedButton(
+                    onClick = {
+                        alternateGreetings = alternateGreetings + ""
+                    },
+                    modifier = Modifier.fillMaxWidth().testTag("editor_add_greeting_button")
+                ) {
+                    Icon(Icons.Default.Add, null)
+                    Spacer(Modifier.width(6.dp))
+                    Text("挨拶候補を追加 (${alternateGreetings.size}/10)")
+                }
+            }
 
             HorizontalDivider()
 
@@ -375,6 +446,24 @@ fun CharacterEditorScreen(
                     Text("会話例を追加 (${structuredDialogue.size}/10)")
                 }
             }
+
+            HorizontalDivider()
+
+            // 追加指示 (Post-History Instructions)
+            Text("追加指示 (Post-History Instructions)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "会話履歴の後、ユーザー入力の直前に挿入される追加指示です。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = postHistoryInstructions,
+                onValueChange = { postHistoryInstructions = it },
+                placeholder = { Text("例: 常にキャラクターとして振る舞い、質問に自然に対話してください。") },
+                modifier = Modifier.fillMaxWidth().testTag("editor_post_history_instructions_input"),
+                minLines = 2,
+                maxLines = 5
+            )
 
             Spacer(Modifier.height(32.dp))
         }
