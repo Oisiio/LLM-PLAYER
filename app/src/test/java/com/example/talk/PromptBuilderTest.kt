@@ -117,4 +117,73 @@ class PromptBuilderTest {
         // Oldest messages should have been trimmed away
         assertFalse(prompt.contains("メッセージ番号 1 "))
     }
+
+    @Test
+    fun testPromptStructure_withUserPersona_allFields() {
+        val character = Character(name = "エレナ")
+        val persona = UserPersona(
+            name = "太郎",
+            description = "図書館に通う高校生",
+            persona = "穏やかで礼儀正しい性格"
+        )
+
+        val prompt = PromptBuilder.buildPrompt(
+            character = character,
+            recentMessages = emptyList(),
+            newUserInput = "こんにちは",
+            userPersona = persona
+        )
+
+        // Verify section order: [指示] -> [ユーザー情報] -> [キャラクター情報]
+        val idxInstruction = prompt.indexOf("[指示]")
+        val idxUser = prompt.indexOf("[ユーザー情報]")
+        val idxChar = prompt.indexOf("[キャラクター情報]")
+
+        assertTrue(idxInstruction != -1)
+        assertTrue(idxUser != -1)
+        assertTrue(idxChar != -1)
+        assertTrue(idxUser > idxInstruction)
+        assertTrue(idxChar > idxUser)
+
+        assertTrue(prompt.contains("名前: 太郎"))
+        assertTrue(prompt.contains("説明: 図書館に通う高校生"))
+        assertTrue(prompt.contains("ペルソナ: 穏やかで礼儀正しい性格"))
+    }
+
+    @Test
+    fun testPromptStructure_withUserPersona_partialFields() {
+        val character = Character(name = "エレナ")
+        val persona = UserPersona(
+            name = "次郎",
+            description = "", // empty
+            persona = "元気で活発"
+        )
+
+        val prompt = PromptBuilder.buildPrompt(
+            character = character,
+            recentMessages = emptyList(),
+            newUserInput = "こんにちは",
+            userPersona = persona
+        )
+
+        assertTrue(prompt.contains("[ユーザー情報]"))
+        assertTrue(prompt.contains("名前: 次郎"))
+        assertFalse(prompt.contains("説明:"))
+        assertTrue(prompt.contains("ペルソナ: 元気で活発"))
+    }
+
+    @Test
+    fun testPromptStructure_withUserPersona_empty_omitsSection() {
+        val character = Character(name = "エレナ")
+        val persona = UserPersona(name = "", description = "   ", persona = "")
+
+        val prompt = PromptBuilder.buildPrompt(
+            character = character,
+            recentMessages = emptyList(),
+            newUserInput = "こんにちは",
+            userPersona = persona
+        )
+
+        assertFalse(prompt.contains("[ユーザー情報]"))
+    }
 }

@@ -4,6 +4,7 @@ import com.example.data.model.Character
 import com.example.data.model.LlmDefaultSettings
 import com.example.data.model.Message
 import com.example.data.model.MessageRole
+import com.example.data.model.UserPersona
 
 object PromptBuilder {
 
@@ -35,7 +36,8 @@ object PromptBuilder {
         recentMessages: List<Message>,
         newUserInput: String,
         contextSize: Int = LlmDefaultSettings.CONTEXT_SIZE,
-        maxOutputTokens: Int = LlmDefaultSettings.MAX_OUTPUT_TOKENS
+        maxOutputTokens: Int = LlmDefaultSettings.MAX_OUTPUT_TOKENS,
+        userPersona: UserPersona = UserPersona()
     ): String {
         // 1. System Prompt / Base instructions
         val systemInstruction = character.systemPrompt.custom.ifBlank {
@@ -43,7 +45,22 @@ object PromptBuilder {
         }
         val systemSection = "[指示]\n${systemInstruction.trim()}\n\n"
 
-        // 2. Character Definition (Name, Description, Personality, Style, Scenario)
+        // 2. User Persona (ユーザー情報) - 未設定時はセクションごと省略、設定された項目のみ出力
+        val userSection = if (!userPersona.isEmpty) {
+            val userSb = StringBuilder("[ユーザー情報]\n")
+            if (userPersona.name.isNotBlank()) {
+                userSb.append("名前: ").append(userPersona.name.trim()).append("\n")
+            }
+            if (userPersona.description.isNotBlank()) {
+                userSb.append("説明: ").append(userPersona.description.trim()).append("\n")
+            }
+            if (userPersona.persona.isNotBlank()) {
+                userSb.append("ペルソナ: ").append(userPersona.persona.trim()).append("\n")
+            }
+            userSb.append("\n").toString()
+        } else ""
+
+        // 3. Character Definition (Name, Description, Personality, Style, Scenario)
         val charInfo = StringBuilder("[キャラクター情報]\n名前: ").append(character.name).append("\n")
         if (character.description.isNotBlank()) {
             charInfo.append("説明: ").append(character.description.trim()).append("\n")
@@ -104,6 +121,7 @@ object PromptBuilder {
         // Token budgeting for history
         val promptBudget = (contextSize - maxOutputTokens).coerceAtLeast(64)
         val fixedTokens = estimateTokens(systemSection) +
+                estimateTokens(userSection) +
                 estimateTokens(charInfoSection) +
                 estimateTokens(exSection) +
                 estimateTokens(postHistorySection) +
@@ -143,6 +161,6 @@ object PromptBuilder {
             sb.append("\n").toString()
         } else ""
 
-        return systemSection + charInfoSection + exSection + historySection + postHistorySection + currentTurnSection
+        return systemSection + userSection + charInfoSection + exSection + historySection + postHistorySection + currentTurnSection
     }
 }

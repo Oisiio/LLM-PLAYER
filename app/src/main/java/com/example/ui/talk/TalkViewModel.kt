@@ -8,6 +8,7 @@ import com.example.data.model.Character
 import com.example.data.model.Chat
 import com.example.data.model.Message
 import com.example.data.model.MessageRole
+import com.example.data.model.UserPersona
 import com.example.data.repository.CharacterViewMode
 import com.example.data.repository.TalkRepository
 import com.example.engine.PromptBuilder
@@ -200,6 +201,7 @@ class TalkViewModel(
     val repository = TalkRepository(context)
 
     val viewMode: StateFlow<CharacterViewMode> = repository.viewMode
+    val userPersona: StateFlow<UserPersona> = repository.userPersona
     val characters: StateFlow<List<Character>> = repository.characters
     val lastMessages: StateFlow<Map<String, Message>> = repository.lastMessages
 
@@ -468,7 +470,8 @@ class TalkViewModel(
             val history = repository.getMessagesForChat(chat.id).filter { it.id != targetMessage.id }
             val contextSize = repository.getDefaultContextSize()
             val maxOutputTokens = repository.getDefaultMaxOutputTokens()
-            val prompt = PromptBuilder.buildPrompt(character, history, userInput, contextSize, maxOutputTokens)
+            val userPersona = repository.getUserPersona()
+            val prompt = PromptBuilder.buildPrompt(character, history, userInput, contextSize, maxOutputTokens, userPersona)
 
             val textAccumulator = StringBuilder()
             val finalResult = withContext(Dispatchers.Default) {

@@ -13,18 +13,25 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.testTag
+import com.example.data.model.UserPersona
 import com.example.data.repository.CharacterViewMode
 import com.example.ui.theme.*
 
 @Composable
 fun GeneralSettingsScreen(
     currentViewMode: CharacterViewMode,
+    currentUserPersona: UserPersona = UserPersona(),
     onOpenDrawer: () -> Unit,
     onBack: () -> Unit,
     onApply: (viewMode: CharacterViewMode) -> Unit,
+    onSaveUserPersona: ((UserPersona) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var viewMode by remember { mutableStateOf(currentViewMode) }
+    var userName by remember(currentUserPersona) { mutableStateOf(currentUserPersona.name) }
+    var userDescription by remember(currentUserPersona) { mutableStateOf(currentUserPersona.description) }
+    var userPersonaText by remember(currentUserPersona) { mutableStateOf(currentUserPersona.persona) }
     val snackbarHostState = remember { SnackbarHostState() }
 
     val viewModeOptions = listOf(
@@ -73,6 +80,52 @@ fun GeneralSettingsScreen(
                     },
                     columns = 2
                 )
+            }
+
+            // User Persona Card
+            LlmSettingsCard(
+                title = "ユーザーペルソナ (User Persona)",
+                description = "キャラクターとの会話時に伝達される、あなた自身の名前や設定"
+            ) {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    OutlinedTextField(
+                        value = userName,
+                        onValueChange = {
+                            userName = it
+                            onSaveUserPersona?.invoke(UserPersona(it, userDescription, userPersonaText))
+                        },
+                        label = { Text("名前 (User Name)") },
+                        placeholder = { Text("例: 太郎") },
+                        singleLine = true,
+                        modifier = Modifier.fillMaxWidth().testTag("settings_user_persona_name")
+                    )
+
+                    OutlinedTextField(
+                        value = userDescription,
+                        onValueChange = {
+                            userDescription = it
+                            onSaveUserPersona?.invoke(UserPersona(userName, it, userPersonaText))
+                        },
+                        label = { Text("説明・属性 (Description)") },
+                        placeholder = { Text("例: 高校生。放課後によく図書館に通っている。") },
+                        minLines = 2,
+                        maxLines = 4,
+                        modifier = Modifier.fillMaxWidth().testTag("settings_user_persona_description")
+                    )
+
+                    OutlinedTextField(
+                        value = userPersonaText,
+                        onValueChange = {
+                            userPersonaText = it
+                            onSaveUserPersona?.invoke(UserPersona(userName, userDescription, it))
+                        },
+                        label = { Text("性格・口調・詳細設定 (Persona)") },
+                        placeholder = { Text("例: 好奇心旺盛で素直。丁寧な敬語で話しかける。") },
+                        minLines = 2,
+                        maxLines = 5,
+                        modifier = Modifier.fillMaxWidth().testTag("settings_user_persona_persona")
+                    )
+                }
             }
 
             // About Card

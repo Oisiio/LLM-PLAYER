@@ -9,6 +9,7 @@ import com.example.data.model.Character
 import com.example.data.model.Chat
 import com.example.data.model.LlmDefaultSettings
 import com.example.data.model.Message
+import com.example.data.model.UserPersona
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -44,6 +45,30 @@ class TalkRepository(private val context: Context) {
     fun setViewMode(mode: CharacterViewMode) {
         _viewMode.value = mode
         prefs.edit().putString("character_view_mode", mode.name).apply()
+    }
+
+    // ==================== User Persona ====================
+
+    private val _userPersona = MutableStateFlow(loadUserPersona())
+    val userPersona: StateFlow<UserPersona> = _userPersona.asStateFlow()
+
+    private fun loadUserPersona(): UserPersona {
+        return UserPersona(
+            name = prefs.getString("user_persona_name", "") ?: "",
+            description = prefs.getString("user_persona_description", "") ?: "",
+            persona = prefs.getString("user_persona_persona", "") ?: ""
+        )
+    }
+
+    fun getUserPersona(): UserPersona = _userPersona.value
+
+    fun saveUserPersona(persona: UserPersona) {
+        _userPersona.value = persona
+        prefs.edit()
+            .putString("user_persona_name", persona.name)
+            .putString("user_persona_description", persona.description)
+            .putString("user_persona_persona", persona.persona)
+            .apply()
     }
 
     // ==================== Default Generation Settings ====================

@@ -8,6 +8,15 @@ enum class MessageRole {
     USER, CHARACTER
 }
 
+data class UserPersona(
+    val name: String = "",
+    val description: String = "",
+    val persona: String = ""
+) {
+    val isEmpty: Boolean
+        get() = name.isBlank() && description.isBlank() && persona.isBlank()
+}
+
 data class PersonalityData(
     val presets: List<String> = emptyList(),
     val custom: String = ""
