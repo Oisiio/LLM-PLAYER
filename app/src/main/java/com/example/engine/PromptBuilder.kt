@@ -37,7 +37,8 @@ object PromptBuilder {
         newUserInput: String,
         contextSize: Int = LlmDefaultSettings.CONTEXT_SIZE,
         maxOutputTokens: Int = LlmDefaultSettings.MAX_OUTPUT_TOKENS,
-        userPersona: UserPersona = UserPersona()
+        userPersona: UserPersona = UserPersona(),
+        continuePrefix: String? = null
     ): String {
         // 1. System Prompt / Base instructions
         val systemInstruction = character.systemPrompt.custom.ifBlank {
@@ -116,7 +117,15 @@ object PromptBuilder {
         } else ""
 
         // 5. Current User message and trigger for Character reply
-        val currentTurnSection = "[今回の会話]\nUser: ${newUserInput.trim()}\n${character.name}:"
+        val currentTurnSection = if (!continuePrefix.isNullOrBlank()) {
+            if (newUserInput.isNotBlank()) {
+                "[今回の会話]\nUser: ${newUserInput.trim()}\n${character.name}: ${continuePrefix.trim()}"
+            } else {
+                "[今回の会話]\n${character.name}: ${continuePrefix.trim()}"
+            }
+        } else {
+            "[今回の会話]\nUser: ${newUserInput.trim()}\n${character.name}:"
+        }
 
         // Token budgeting for history
         val promptBudget = (contextSize - maxOutputTokens).coerceAtLeast(64)

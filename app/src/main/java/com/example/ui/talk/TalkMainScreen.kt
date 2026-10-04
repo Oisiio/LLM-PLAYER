@@ -108,6 +108,9 @@ fun TalkMainScreen(
                     onSendMessage = { text ->
                         viewModel.sendMessage(dest.character, dest.chat, text)
                     },
+                    onContinue = { msg ->
+                        viewModel.continueCharacterMessage(dest.character, dest.chat, msg)
+                    },
                     onRegenerate = { msg ->
                         viewModel.regenerateCharacterMessage(dest.character, dest.chat, msg)
                     },

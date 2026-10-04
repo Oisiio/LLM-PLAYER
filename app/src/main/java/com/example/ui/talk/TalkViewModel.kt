@@ -431,7 +431,8 @@ class TalkViewModel(
         character: Character,
         chat: Chat,
         userInput: String,
-        existingCharMessage: Message?
+        existingCharMessage: Message?,
+        isContinue: Boolean = false
     ) {
         viewModelScope.launch {
             if (!llmRunner.isModelLoaded()) {
@@ -446,8 +447,12 @@ class TalkViewModel(
                 return@launch
             }
 
+            val baseContent = if (isContinue) {
+                existingCharMessage?.displayContent ?: ""
+            } else ""
+
             _isStreaming.value = true
-            _streamingText.value = ""
+            _streamingText.value = baseContent
             _debugMetrics.value = TalkDebugMetrics(isGenerating = true)
 
             // Target message placeholder
@@ -471,7 +476,15 @@ class TalkViewModel(
             val contextSize = repository.getDefaultContextSize()
             val maxOutputTokens = repository.getDefaultMaxOutputTokens()
             val userPersona = repository.getUserPersona()
-            val prompt = PromptBuilder.buildPrompt(character, history, userInput, contextSize, maxOutputTokens, userPersona)
+            val prompt = PromptBuilder.buildPrompt(
+                character = character,
+                recentMessages = history,
+                newUserInput = userInput,
+                contextSize = contextSize,
+                maxOutputTokens = maxOutputTokens,
+                userPersona = userPersona,
+                continuePrefix = if (isContinue) baseContent else null
+            )
 
             val textAccumulator = StringBuilder()
             val finalResult = withContext(Dispatchers.Default) {
@@ -488,7 +501,11 @@ class TalkViewModel(
                     enableThinking = false, // Talkでは必ずThinking OFF
                     onToken = { token ->
                         textAccumulator.append(token)
-                        _streamingText.value = textAccumulator.toString()
+                        _streamingText.value = if (isContinue) {
+                            baseContent + textAccumulator.toString()
+                        } else {
+                            textAccumulator.toString()
+                        }
                     },
                     onTtft = { ttft ->
                         _debugMetrics.value = _debugMetrics.value?.copy(ttftMs = ttft) ?: TalkDebugMetrics(ttftMs = ttft, isGenerating = true)
@@ -506,32 +523,78 @@ class TalkViewModel(
             // 短時間待って確定 (要件41)
             delay(150)
 
-            val generatedAnswer = finalResult.ifBlank { textAccumulator.toString() }
-
-            // Candidate management (最大3個, 要件39)
-            val existingCandidates = targetMessage.candidates.toMutableList()
-            if (existingCandidates.isEmpty()) {
-                existingCandidates.add(generatedAnswer)
+            val rawGenerated = if (finalResult.startsWith("ERROR:")) {
+                textAccumulator.toString()
             } else {
-                if (existingCandidates.size >= 3) {
-                    existingCandidates.removeAt(0) // 4個目で最古を削除
-                }
-                existingCandidates.add(generatedAnswer)
+                finalResult.ifBlank { textAccumulator.toString() }
             }
 
-            val updatedMessage = targetMessage.copy(
-                content = generatedAnswer,
-                candidates = existingCandidates,
-                selectedCandidateIndex = existingCandidates.size - 1,
-                timestamp = System.currentTimeMillis()
-            )
+            val generatedAnswer = if (isContinue) {
+                baseContent + rawGenerated
+            } else {
+                rawGenerated
+            }
 
-            repository.saveMessage(updatedMessage)
+            if (isContinue) {
+                // Continue: 既存の selectedCandidateIndex の内容を末尾延長して更新
+                val existingCandidates = targetMessage.candidates.toMutableList()
+                val selIdx = targetMessage.selectedCandidateIndex.coerceIn(0, (existingCandidates.size - 1).coerceAtLeast(0))
+                if (existingCandidates.isNotEmpty() && selIdx in existingCandidates.indices) {
+                    existingCandidates[selIdx] = generatedAnswer
+                } else {
+                    existingCandidates.clear()
+                    existingCandidates.add(generatedAnswer)
+                }
+
+                val updatedMessage = targetMessage.copy(
+                    content = generatedAnswer,
+                    candidates = existingCandidates,
+                    selectedCandidateIndex = selIdx,
+                    timestamp = System.currentTimeMillis()
+                )
+                repository.saveMessage(updatedMessage)
+            } else {
+                // Candidate management (最大3個, 要件39)
+                val existingCandidates = targetMessage.candidates.toMutableList()
+                if (existingCandidates.isEmpty()) {
+                    existingCandidates.add(generatedAnswer)
+                } else {
+                    if (existingCandidates.size >= 3) {
+                        existingCandidates.removeAt(0) // 4個目で最古を削除
+                    }
+                    existingCandidates.add(generatedAnswer)
+                }
+
+                val updatedMessage = targetMessage.copy(
+                    content = generatedAnswer,
+                    candidates = existingCandidates,
+                    selectedCandidateIndex = existingCandidates.size - 1,
+                    timestamp = System.currentTimeMillis()
+                )
+                repository.saveMessage(updatedMessage)
+            }
+
             _isStreaming.value = false
             _streamingMessageId.value = null
             _streamingText.value = ""
             _debugMetrics.value = _debugMetrics.value?.copy(isGenerating = false)
             loadMessages(chat.id)
+        }
+    }
+
+    // 続きを生成 (Continue Generation)
+    fun continueCharacterMessage(character: Character, chat: Chat, message: Message) {
+        if (_isStreaming.value) return
+        if (message.role != MessageRole.CHARACTER) return
+        viewModelScope.launch {
+            val allMessages = repository.getMessagesForChat(chat.id)
+            val msgIndex = allMessages.indexOfFirst { it.id == message.id }
+            val previousUserMsg = if (msgIndex > 0) {
+                allMessages.subList(0, msgIndex).lastOrNull { it.role == MessageRole.USER }
+            } else null
+
+            val userText = previousUserMsg?.content ?: ""
+            startCharacterInference(character, chat, userText, existingCharMessage = message, isContinue = true)
         }
     }
 

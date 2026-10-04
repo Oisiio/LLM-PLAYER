@@ -27,6 +27,7 @@ import androidx.compose.ui.unit.dp
 import com.example.data.model.Character
 import com.example.data.model.Chat
 import com.example.data.model.Message
+import com.example.data.model.MessageRole
 import com.example.ui.talk.components.AvatarView
 import com.example.ui.talk.components.ChatInputBar
 import com.example.ui.talk.components.MessageBubble
@@ -44,6 +45,7 @@ fun ChatScreen(
     streamingText: String,
     debugMetrics: TalkDebugMetrics? = null,
     onSendMessage: (String) -> Unit,
+    onContinue: (Message) -> Unit = {},
     onRegenerate: (Message) -> Unit,
     onDeleteCharacterMessage: (Message) -> Unit,
     onEditUserMessageConfirm: (Message, String) -> Unit,
@@ -378,6 +380,7 @@ fun ChatScreen(
                         }
                     } else {
                         val isStreamingThis = isStreaming && streamingMessageId == msg.id
+                        val isLastMessage = messages.lastOrNull()?.id == msg.id
                         MessageBubble(
                             message = msg,
                             character = character,
@@ -390,6 +393,9 @@ fun ChatScreen(
                                     snackbarHostState.showSnackbar("メッセージをコピーしました", duration = SnackbarDuration.Short)
                                 }
                             },
+                            onContinue = if (isLastMessage && msg.role == MessageRole.CHARACTER) {
+                                { target -> onContinue(target) }
+                            } else null,
                             onRegenerate = { target ->
                                 onRegenerate(target)
                             },

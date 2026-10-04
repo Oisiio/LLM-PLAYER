@@ -38,6 +38,7 @@ fun MessageBubble(
     streamingText: String,
     anyStreaming: Boolean,
     onCopy: (String) -> Unit,
+    onContinue: ((Message) -> Unit)? = null,
     onRegenerate: (Message) -> Unit,
     onDelete: (Message) -> Unit,
     onEditUser: (Message) -> Unit,
@@ -155,6 +156,16 @@ fun MessageBubble(
                                 },
                                 modifier = Modifier.testTag("char_menu_copy")
                             )
+                            if (onContinue != null) {
+                                DropdownMenuItem(
+                                    text = { Text("続きを生成") },
+                                    onClick = {
+                                        showMenu = false
+                                        onContinue(message)
+                                    },
+                                    modifier = Modifier.testTag("char_menu_continue")
+                                )
+                            }
                             DropdownMenuItem(
                                 text = { Text("再生成") },
                                 onClick = {
