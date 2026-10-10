@@ -89,17 +89,17 @@ fun ChatScreen(
     LaunchedEffect(messages.size) {
         if (messages.isNotEmpty()) {
             if (autoScrollEnabled) {
-                listState.scrollToItem(messages.size - 1)
+                listState.scrollToItem(messages.size)
             } else {
                 hasNewMessageWhileScrolledUp = true
             }
         }
     }
 
-    // Auto-scroll when streaming if enabled
+    // Auto-scroll when streaming if enabled (末尾アンカーへ追従)
     LaunchedEffect(streamingText) {
         if (isStreaming && autoScrollEnabled && messages.isNotEmpty() && !isUserDragging) {
-            listState.scrollToItem(messages.size - 1)
+            listState.scrollToItem(messages.size)
         }
     }
 
@@ -141,12 +141,12 @@ fun ChatScreen(
         }
 
         // Check scroll position and manage autoScrollEnabled
-        val totalItems = messages.size
-        if (totalItems > 0) {
+        val totalMessages = messages.size
+        if (totalMessages > 0) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
             // 物理的な最下端に到達しているかの判定:
-            // 末尾アイテムが見えており、かつ下方向にスクロール余白がない状態 (canScrollForward == false)
-            val atBottom = (lastVisible >= totalItems - 1) && !listState.canScrollForward
+            // ボトムアンカー（index: totalMessages）または末尾が見えており、かつ下方向にスクロール余白がない状態
+            val atBottom = (lastVisible >= totalMessages) && !listState.canScrollForward
 
             if (atBottom) {
                 // 最下端に到達した場合は自動追従を再開
@@ -154,8 +154,7 @@ fun ChatScreen(
                 hasNewMessageWhileScrolledUp = false
                 isGenerationFinishedWhileScrolledUp = false
             } else if (isUserDragging) {
-                // ユーザーが意図的に手動ドラッグ操作で最下端から離脱した場合のみ自動追従を解除
-                // （単なるコンテンツ拡張や自動レイアウト変更による canScrollForward 変動では解除しない）
+                // ユーザーが手動ドラッグ操作で最下端から離脱した場合のみ自動追従を解除
                 autoScrollEnabled = false
                 if (isStreaming) {
                     hasNewMessageWhileScrolledUp = true
@@ -443,6 +442,10 @@ fun ChatScreen(
                         )
                     }
                 }
+                // 末尾アンカーアイテム (messages.size のインデックスを持つ)
+                item(key = "chat_bottom_anchor") {
+                    Spacer(modifier = Modifier.height(1.dp))
+                }
             }
 
             // Scroll to bottom button / new message indicator
@@ -453,7 +456,7 @@ fun ChatScreen(
                             autoScrollEnabled = true
                             hasNewMessageWhileScrolledUp = false
                             isGenerationFinishedWhileScrolledUp = false
-                            if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size - 1)
+                            if (messages.isNotEmpty()) listState.animateScrollToItem(messages.size)
                         }
                     },
                     modifier = Modifier
