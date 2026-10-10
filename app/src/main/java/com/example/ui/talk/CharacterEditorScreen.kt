@@ -30,6 +30,10 @@ fun CharacterEditorScreen(
 ) {
     var name by remember { mutableStateOf(character?.name ?: "") }
     var description by remember { mutableStateOf(character?.description ?: "") }
+    var creator by remember { mutableStateOf(character?.metadata?.creator ?: "") }
+    var creatorNotes by remember { mutableStateOf(character?.metadata?.creatorNotes ?: "") }
+    var characterVersion by remember { mutableStateOf(character?.metadata?.characterVersion ?: "") }
+    var tagsText by remember { mutableStateOf(character?.metadata?.tags?.joinToString(", ") ?: "") }
     var selectedImageUri by remember { mutableStateOf<Uri?>(null) }
     var currentIconUri by remember { mutableStateOf(character?.iconUri) }
 
@@ -128,6 +132,13 @@ fun CharacterEditorScreen(
                                 scenario = ScenarioData(null, scenarioContent),
                                 exampleDialogue = ExampleDialogueData(structuredDialogue.take(10), freeformDialogue.take(1000)),
                                 postHistoryInstructions = postHistoryInstructions.trim(),
+                                metadata = CharacterMetadata(
+                                    creator = creator.trim().take(100),
+                                    creatorNotes = creatorNotes.take(4000),
+                                    characterVersion = characterVersion.trim().take(100),
+                                    tags = tagsText.split(",", "，", "、").map { it.trim() }
+                                        .filter { it.isNotEmpty() && it.length <= 50 }.distinct().take(50)
+                                ),
                                 lastUsedAt = System.currentTimeMillis()
                             )
                             onSave(updated, selectedImageUri)
@@ -207,6 +218,47 @@ fun CharacterEditorScreen(
                 modifier = Modifier.fillMaxWidth().testTag("editor_description_input"),
                 minLines = 2,
                 maxLines = 5
+            )
+
+            HorizontalDivider()
+
+            // Character Card Metadata
+            Text("カードメタデータ (Character Card Metadata)", fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium)
+            Text(
+                "作者情報や検索用タグです。キャラクターの会話プロンプトには自動追加されません。",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            OutlinedTextField(
+                value = creator,
+                onValueChange = { creator = it.take(100) },
+                label = { Text("作者名 (Creator)") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("editor_creator_input")
+            )
+            OutlinedTextField(
+                value = creatorNotes,
+                onValueChange = { creatorNotes = it.take(4000) },
+                label = { Text("作者コメント (Creator Notes)") },
+                modifier = Modifier.fillMaxWidth().testTag("editor_creator_notes_input"),
+                minLines = 2,
+                maxLines = 5
+            )
+            OutlinedTextField(
+                value = characterVersion,
+                onValueChange = { characterVersion = it.take(100) },
+                label = { Text("キャラクターバージョン") },
+                singleLine = true,
+                modifier = Modifier.fillMaxWidth().testTag("editor_character_version_input")
+            )
+            OutlinedTextField(
+                value = tagsText,
+                onValueChange = { tagsText = it.take(2000) },
+                label = { Text("タグ (カンマ区切り・最大50件)") },
+                placeholder = { Text("例: ファンタジー, 魔法, 学園") },
+                modifier = Modifier.fillMaxWidth().testTag("editor_tags_input"),
+                minLines = 1,
+                maxLines = 3
             )
 
             HorizontalDivider()

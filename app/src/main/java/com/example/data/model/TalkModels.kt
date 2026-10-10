@@ -47,6 +47,13 @@ data class ExampleDialogueData(
     val freeform: String = ""
 )
 
+data class CharacterMetadata(
+    val creator: String = "",
+    val creatorNotes: String = "",
+    val characterVersion: String = "",
+    val tags: List<String> = emptyList()
+)
+
 data class Character(
     val id: String = UUID.randomUUID().toString(),
     val name: String,
@@ -60,6 +67,7 @@ data class Character(
     val scenario: ScenarioData = ScenarioData(),
     val exampleDialogue: ExampleDialogueData = ExampleDialogueData(),
     val postHistoryInstructions: String = "",
+    val metadata: CharacterMetadata = CharacterMetadata(),
     val isFavorite: Boolean = false,
     val lastUsedAt: Long = System.currentTimeMillis()
 )
@@ -168,6 +176,15 @@ object CharacterJsonConverter {
         charObj.put("example_dialogue", exObj)
 
         charObj.put("post_history_instructions", character.postHistoryInstructions)
+
+        val metadataObj = JSONObject()
+        metadataObj.put("creator", character.metadata.creator)
+        metadataObj.put("creator_notes", character.metadata.creatorNotes)
+        metadataObj.put("character_version", character.metadata.characterVersion)
+        val metadataTags = JSONArray()
+        character.metadata.tags.forEach { metadataTags.put(it) }
+        metadataObj.put("tags", metadataTags)
+        charObj.put("metadata", metadataObj)
 
         root.put("character", charObj)
         return root.toString(2)
@@ -288,6 +305,20 @@ object CharacterJsonConverter {
         }
 
         val postHistoryInstructions = charObj.optString("post_history_instructions", "")
+        val metadataObj = charObj.optJSONObject("metadata")
+        val metadataTags = mutableListOf<String>()
+        metadataObj?.optJSONArray("tags")?.let { arr ->
+            for (i in 0 until minOf(arr.length(), 50)) {
+                val tag = arr.optString(i, "").trim()
+                if (tag.isNotEmpty() && tag.length <= 50 && tag !in metadataTags) metadataTags.add(tag)
+            }
+        }
+        val metadata = CharacterMetadata(
+            creator = metadataObj?.optString("creator", "")?.take(100) ?: "",
+            creatorNotes = metadataObj?.optString("creator_notes", "")?.take(4000) ?: "",
+            characterVersion = metadataObj?.optString("character_version", "")?.take(100) ?: "",
+            tags = metadataTags
+        )
 
         val character = Character(
             id = UUID.randomUUID().toString(),
@@ -302,6 +333,7 @@ object CharacterJsonConverter {
             scenario = ScenarioData(scnTemplate, scnContent),
             exampleDialogue = ExampleDialogueData(structuredList, freeform),
             postHistoryInstructions = postHistoryInstructions,
+            metadata = metadata,
             isFavorite = false,
             lastUsedAt = System.currentTimeMillis()
         )
