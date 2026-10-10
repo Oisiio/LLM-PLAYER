@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.collectIsDraggedAsState
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -62,6 +63,7 @@ fun ChatScreen(
 ) {
     val coroutineScope = rememberCoroutineScope()
     val listState = rememberLazyListState()
+    val isUserDragging by listState.interactionSource.collectIsDraggedAsState()
     val focusManager = LocalFocusManager.current
     val clipboardManager = LocalClipboardManager.current
     val snackbarHostState = remember { SnackbarHostState() }
@@ -94,9 +96,9 @@ fun ChatScreen(
         }
     }
 
-    // Auto-scroll when streaming if enabled (ユーザーが手動スクロール操作中でない場合のみ追従)
+    // Auto-scroll when streaming if enabled
     LaunchedEffect(streamingText) {
-        if (isStreaming && autoScrollEnabled && messages.isNotEmpty() && !listState.isScrollInProgress) {
+        if (isStreaming && autoScrollEnabled && messages.isNotEmpty() && !isUserDragging) {
             listState.scrollToItem(messages.size - 1)
         }
     }
@@ -123,7 +125,7 @@ fun ChatScreen(
         }
 
         // Close keyboard on scroll (ユーザーによる手動ドラッグスクロール時のみ)
-        if (listState.isScrollInProgress && (currentOffset != previousScrollOffset || currentIndex != previousIndex)) {
+        if (isUserDragging && (currentOffset != previousScrollOffset || currentIndex != previousIndex)) {
             focusManager.clearFocus()
         }
 
@@ -138,17 +140,26 @@ fun ChatScreen(
             isInputVisible = true
         }
 
-        // Check if user is at the bottom
+        // Check scroll position and manage autoScrollEnabled
         val totalItems = messages.size
         if (totalItems > 0) {
             val lastVisible = listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-            val atBottom = lastVisible >= totalItems - 1
+            // 物理的な最下端に到達しているかの判定:
+            // 末尾アイテムが見えており、かつ下方向にスクロール余白がない状態 (canScrollForward == false)
+            val atBottom = (lastVisible >= totalItems - 1) && !listState.canScrollForward
+
             if (atBottom) {
+                // 最下端に到達した場合は自動追従を再開
                 autoScrollEnabled = true
                 hasNewMessageWhileScrolledUp = false
                 isGenerationFinishedWhileScrolledUp = false
-            } else {
+            } else if (isUserDragging) {
+                // ユーザーが意図的に手動ドラッグ操作で最下端から離脱した場合のみ自動追従を解除
+                // （単なるコンテンツ拡張や自動レイアウト変更による canScrollForward 変動では解除しない）
                 autoScrollEnabled = false
+                if (isStreaming) {
+                    hasNewMessageWhileScrolledUp = true
+                }
             }
         }
 
