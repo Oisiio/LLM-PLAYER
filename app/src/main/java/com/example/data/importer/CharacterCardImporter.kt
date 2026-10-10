@@ -87,6 +87,19 @@ object CharacterCardImporter {
         val firstMessage = dataObj.optString("first_mes", "").trim()
         val mesExample = dataObj.optString("mes_example", "").trim()
         val postHistory = dataObj.optString("post_history_instructions", "").trim()
+        val metadataTags = mutableListOf<String>()
+        dataObj.optJSONArray("tags")?.let { arr ->
+            for (i in 0 until minOf(arr.length(), 50)) {
+                val tag = arr.optString(i, "").trim()
+                if (tag.isNotEmpty() && tag.length <= 50 && tag !in metadataTags) metadataTags.add(tag)
+            }
+        }
+        val metadata = CharacterMetadata(
+            creator = dataObj.optString("creator", "").take(100),
+            creatorNotes = dataObj.optString("creator_notes", "").take(4000),
+            characterVersion = dataObj.optString("character_version", "").take(100),
+            tags = metadataTags
+        )
 
         val altGreetings = mutableListOf<String>()
         val altArr = dataObj.optJSONArray("alternate_greetings")
@@ -110,6 +123,7 @@ object CharacterCardImporter {
             scenario = ScenarioData(template = null, content = scenarioText),
             exampleDialogue = ExampleDialogueData(structured = emptyList(), freeform = mesExample),
             postHistoryInstructions = postHistory,
+            metadata = metadata,
             isFavorite = false,
             lastUsedAt = System.currentTimeMillis()
         )
