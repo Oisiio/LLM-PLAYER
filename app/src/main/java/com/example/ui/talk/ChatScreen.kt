@@ -44,6 +44,8 @@ fun ChatScreen(
     streamingMessageId: String?,
     streamingText: String,
     debugMetrics: TalkDebugMetrics? = null,
+    showDebugMetrics: Boolean = false,
+    onToggleDebugMetrics: (() -> Unit)? = null,
     onSendMessage: (String) -> Unit,
     onContinue: (Message) -> Unit = {},
     onRegenerate: (Message) -> Unit,
@@ -92,9 +94,9 @@ fun ChatScreen(
         }
     }
 
-    // Auto-scroll when streaming if enabled
+    // Auto-scroll when streaming if enabled (ユーザーが手動スクロール操作中でない場合のみ追従)
     LaunchedEffect(streamingText) {
-        if (isStreaming && autoScrollEnabled && messages.isNotEmpty()) {
+        if (isStreaming && autoScrollEnabled && messages.isNotEmpty() && !listState.isScrollInProgress) {
             listState.scrollToItem(messages.size - 1)
         }
     }
@@ -120,8 +122,8 @@ fun ChatScreen(
             currentOffset > previousScrollOffset
         }
 
-        // Close keyboard on scroll
-        if (currentOffset != previousScrollOffset || currentIndex != previousIndex) {
+        // Close keyboard on scroll (ユーザーによる手動ドラッグスクロール時のみ)
+        if (listState.isScrollInProgress && (currentOffset != previousScrollOffset || currentIndex != previousIndex)) {
             focusManager.clearFocus()
         }
 
@@ -278,6 +280,14 @@ fun ChatScreen(
                                 },
                                 modifier = Modifier.testTag("menu_chat_settings")
                             )
+                            DropdownMenuItem(
+                                text = { Text(if (showDebugMetrics) "DEBUG表示: ON" else "DEBUG表示: OFF") },
+                                onClick = {
+                                    showTopMenu = false
+                                    onToggleDebugMetrics?.invoke()
+                                },
+                                modifier = Modifier.testTag("menu_toggle_debug")
+                            )
                         }
                     }
                 }
@@ -315,7 +325,7 @@ fun ChatScreen(
                 .fillMaxSize()
                 .padding(padding)
         ) {
-            if (com.example.BuildConfig.DEBUG) {
+            if (showDebugMetrics) {
                 TalkDebugMetricsPanel(metrics = debugMetrics)
             }
             Box(

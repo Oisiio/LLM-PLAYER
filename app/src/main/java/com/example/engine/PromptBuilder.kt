@@ -31,6 +31,39 @@ object PromptBuilder {
         return cjk + Math.ceil(other / 3.0).toInt() + 2
     }
 
+    /**
+     * Character Card V2 および標準テンプレートマクロ ({{user}}, <USER>, {{char}}, <CHAR>, <BOT>, {{user_description}}, {{user_persona}}) を
+     * ユーザー設定・キャラクター設定に基づいて安全に置換します。
+     */
+    fun resolvePlaceholders(
+        template: String,
+        userName: String,
+        charName: String,
+        userDescription: String = "",
+        userPersonaText: String = ""
+    ): String {
+        if (template.isEmpty()) return template
+        var result = template
+        if (userDescription.isNotBlank()) {
+            result = result.replace("{{user_description}}", userDescription, ignoreCase = true)
+        } else {
+            result = result.replace("{{user_description}}", "", ignoreCase = true)
+        }
+        if (userPersonaText.isNotBlank()) {
+            result = result.replace("{{user_persona}}", userPersonaText, ignoreCase = true)
+        } else {
+            result = result.replace("{{user_persona}}", "", ignoreCase = true)
+        }
+
+        val safeUserName = userName.ifBlank { "User" }
+        result = result.replace("{{user}}", safeUserName, ignoreCase = true)
+            .replace("<USER>", safeUserName, ignoreCase = true)
+            .replace("{{char}}", charName, ignoreCase = true)
+            .replace("<CHAR>", charName, ignoreCase = true)
+            .replace("<BOT>", charName, ignoreCase = true)
+        return result
+    }
+
     fun buildPrompt(
         character: Character,
         recentMessages: List<Message>,
@@ -40,10 +73,24 @@ object PromptBuilder {
         userPersona: UserPersona = UserPersona(),
         continuePrefix: String? = null
     ): String {
+        val effectiveUserName = userPersona.name.ifBlank { "User" }.trim()
+        val charName = character.name.trim()
+
+        fun applyPlaceholders(text: String): String {
+            return resolvePlaceholders(
+                template = text,
+                userName = effectiveUserName,
+                charName = charName,
+                userDescription = userPersona.description.trim(),
+                userPersonaText = userPersona.persona.trim()
+            )
+        }
+
         // 1. System Prompt / Base instructions
-        val systemInstruction = character.systemPrompt.custom.ifBlank {
+        val rawSystemInstruction = character.systemPrompt.custom.ifBlank {
             character.systemPrompt.template ?: "あなたは以下のキャラクターとして振る舞い、ユーザーと自然に対話してください。"
         }
+        val systemInstruction = applyPlaceholders(rawSystemInstruction)
         val systemSection = "[指示]\n${systemInstruction.trim()}\n\n"
 
         // 2. User Persona (ユーザー情報) - 未設定時はセクションごと省略、設定された項目のみ出力
@@ -62,9 +109,9 @@ object PromptBuilder {
         } else ""
 
         // 3. Character Definition (Name, Description, Personality, Style, Scenario)
-        val charInfo = StringBuilder("[キャラクター情報]\n名前: ").append(character.name).append("\n")
+        val charInfo = StringBuilder("[キャラクター情報]\n名前: ").append(charName).append("\n")
         if (character.description.isNotBlank()) {
-            charInfo.append("説明: ").append(character.description.trim()).append("\n")
+            charInfo.append("説明: ").append(applyPlaceholders(character.description.trim())).append("\n")
         }
 
         val personalityItems = mutableListOf<String>()
@@ -72,7 +119,7 @@ object PromptBuilder {
             personalityItems.add(character.personality.presets.joinToString(", "))
         }
         if (character.personality.custom.isNotBlank()) {
-            personalityItems.add(character.personality.custom.trim())
+            personalityItems.add(applyPlaceholders(character.personality.custom.trim()))
         }
         if (personalityItems.isNotEmpty()) {
             charInfo.append("性格: ").append(personalityItems.joinToString(" / ")).append("\n")
@@ -83,7 +130,7 @@ object PromptBuilder {
             styleItems.add(character.style.presets.joinToString(", "))
         }
         if (character.style.custom.isNotBlank()) {
-            styleItems.add(character.style.custom.trim())
+            styleItems.add(applyPlaceholders(character.style.custom.trim()))
         }
         if (styleItems.isNotEmpty()) {
             charInfo.append("口調・話し方: ").append(styleItems.joinToString(" / ")).append("\n")
@@ -91,7 +138,7 @@ object PromptBuilder {
 
         val scenarioText = character.scenario.content.ifBlank { character.scenario.template ?: "" }.trim()
         if (scenarioText.isNotBlank()) {
-            charInfo.append("シチュエーション・背景: ").append(scenarioText).append("\n")
+            charInfo.append("シチュエーション・背景: ").append(applyPlaceholders(scenarioText)).append("\n")
         }
         charInfo.append("\n")
         val charInfoSection = charInfo.toString()
@@ -100,12 +147,12 @@ object PromptBuilder {
         val exSection = if (character.exampleDialogue.freeform.isNotBlank() || character.exampleDialogue.structured.isNotEmpty()) {
             val exSb = StringBuilder("[会話例]\n")
             if (character.exampleDialogue.freeform.isNotBlank()) {
-                exSb.append(character.exampleDialogue.freeform.take(1000).trim()).append("\n")
+                exSb.append(applyPlaceholders(character.exampleDialogue.freeform.take(1000).trim())).append("\n")
             }
             if (character.exampleDialogue.structured.isNotEmpty()) {
                 for (pair in character.exampleDialogue.structured.take(10)) {
-                    if (pair.user.isNotBlank()) exSb.append("User: ").append(pair.user.trim()).append("\n")
-                    if (pair.character.isNotBlank()) exSb.append(character.name).append(": ").append(pair.character.trim()).append("\n")
+                    if (pair.user.isNotBlank()) exSb.append(effectiveUserName).append(": ").append(applyPlaceholders(pair.user.trim())).append("\n")
+                    if (pair.character.isNotBlank()) exSb.append(charName).append(": ").append(applyPlaceholders(pair.character.trim())).append("\n")
                 }
             }
             exSb.append("\n").toString()
@@ -113,18 +160,18 @@ object PromptBuilder {
 
         // 4. Post History Instructions
         val postHistorySection = if (character.postHistoryInstructions.isNotBlank()) {
-            "[追加指示]\n${character.postHistoryInstructions.trim()}\n\n"
+            "[追加指示]\n${applyPlaceholders(character.postHistoryInstructions.trim())}\n\n"
         } else ""
 
         // 5. Current User message and trigger for Character reply
         val currentTurnSection = if (!continuePrefix.isNullOrBlank()) {
             if (newUserInput.isNotBlank()) {
-                "[今回の会話]\nUser: ${newUserInput.trim()}\n${character.name}: ${continuePrefix.trim()}"
+                "[今回の会話]\n$effectiveUserName: ${newUserInput.trim()}\n${charName}: ${continuePrefix.trim()}"
             } else {
-                "[今回の会話]\n${character.name}: ${continuePrefix.trim()}"
+                "[今回の会話]\n${charName}: ${continuePrefix.trim()}"
             }
         } else {
-            "[今回の会話]\nUser: ${newUserInput.trim()}\n${character.name}:"
+            "[今回の会話]\n$effectiveUserName: ${newUserInput.trim()}\n${charName}:"
         }
 
         // Token budgeting for history
@@ -148,7 +195,7 @@ object PromptBuilder {
             val msg = candidates[i]
             val content = msg.displayContent.trim()
             if (content.isEmpty()) continue
-            val speaker = if (msg.role == MessageRole.USER) "User" else character.name
+            val speaker = if (msg.role == MessageRole.USER) effectiveUserName else charName
             val line = "$speaker: $content\n"
             val lineTokens = estimateTokens(line)
             if (historyUsedTokens + lineTokens <= availableForHistory || selectedHistoryLines.isEmpty()) {

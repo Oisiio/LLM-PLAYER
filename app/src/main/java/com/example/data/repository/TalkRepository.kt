@@ -71,6 +71,20 @@ class TalkRepository(private val context: Context) {
             .apply()
     }
 
+    // ==================== Debug Metrics Display ====================
+
+    private val _showDebugMetrics = MutableStateFlow(
+        prefs.getBoolean("show_debug_metrics", false)
+    )
+    val showDebugMetrics: StateFlow<Boolean> = _showDebugMetrics.asStateFlow()
+
+    fun isDebugMetricsEnabled(): Boolean = _showDebugMetrics.value
+
+    fun setShowDebugMetrics(enabled: Boolean) {
+        _showDebugMetrics.value = enabled
+        prefs.edit().putBoolean("show_debug_metrics", enabled).apply()
+    }
+
     // ==================== Default Generation Settings ====================
 
     fun getDefaultTemperature(): Float = prefs.getFloat("default_temperature", LlmDefaultSettings.TEMPERATURE)

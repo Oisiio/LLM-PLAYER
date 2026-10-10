@@ -22,10 +22,12 @@ import com.example.ui.theme.*
 fun GeneralSettingsScreen(
     currentViewMode: CharacterViewMode,
     currentUserPersona: UserPersona = UserPersona(),
+    showDebugMetrics: Boolean = false,
     onOpenDrawer: () -> Unit,
     onBack: () -> Unit,
     onApply: (viewMode: CharacterViewMode) -> Unit,
     onSaveUserPersona: ((UserPersona) -> Unit)? = null,
+    onToggleDebugMetrics: ((Boolean) -> Unit)? = null,
     modifier: Modifier = Modifier
 ) {
     var viewMode by remember { mutableStateOf(currentViewMode) }
@@ -124,6 +126,28 @@ fun GeneralSettingsScreen(
                         minLines = 2,
                         maxLines = 5,
                         modifier = Modifier.fillMaxWidth().testTag("settings_user_persona_persona")
+                    )
+                }
+            }
+
+            // Debug Metrics Card
+            LlmSettingsCard(
+                title = "デバッグ表示 (Debug Metrics)",
+                description = "Talk画面に推論速度 (tokens/sec) やトークン数パネルを表示"
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("メトリクスパネル表示", style = MaterialTheme.typography.bodyMedium, color = LlmTextPrimary)
+                        Text("推論中のTTFT、tok/s、使用スレッド数をリアルタイム確認", style = MaterialTheme.typography.bodySmall, color = LlmTextSecondary)
+                    }
+                    Switch(
+                        checked = showDebugMetrics,
+                        onCheckedChange = { onToggleDebugMetrics?.invoke(it) },
+                        modifier = Modifier.testTag("settings_debug_metrics_switch")
                     )
                 }
             }

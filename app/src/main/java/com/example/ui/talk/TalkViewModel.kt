@@ -228,6 +228,19 @@ class TalkViewModel(
     private val _debugMetrics = MutableStateFlow<TalkDebugMetrics?>(null)
     val debugMetrics: StateFlow<TalkDebugMetrics?> = _debugMetrics.asStateFlow()
 
+    val showDebugMetrics: StateFlow<Boolean> = repository.showDebugMetrics
+
+    fun toggleDebugMetrics() {
+        repository.setShowDebugMetrics(!showDebugMetrics.value)
+    }
+
+    fun setShowDebugMetrics(enabled: Boolean) {
+        repository.setShowDebugMetrics(enabled)
+    }
+
+    // Inference Job for single owner lifecycle
+    private var generationJob: Job? = null
+
     // Deleted messages backup for Undo (within 10s)
     private var deletedMessagesBackup = mutableListOf<Message>()
     private var undoJob: Job? = null
@@ -337,9 +350,30 @@ class TalkViewModel(
         )
         repository.saveChat(chat)
         // 初期の「最初の文章」や「挨拶候補」があればメッセージとして投入
+        val userPersona = repository.getUserPersona()
         val allGreetings = buildList {
-            if (character.firstMessage.isNotBlank()) add(character.firstMessage)
-            addAll(character.alternateGreetings.filter { it.isNotBlank() })
+            if (character.firstMessage.isNotBlank()) {
+                add(
+                    PromptBuilder.resolvePlaceholders(
+                        template = character.firstMessage,
+                        userName = userPersona.name,
+                        charName = character.name,
+                        userDescription = userPersona.description,
+                        userPersonaText = userPersona.persona
+                    )
+                )
+            }
+            addAll(
+                character.alternateGreetings.filter { it.isNotBlank() }.map {
+                    PromptBuilder.resolvePlaceholders(
+                        template = it,
+                        userName = userPersona.name,
+                        charName = character.name,
+                        userDescription = userPersona.description,
+                        userPersonaText = userPersona.persona
+                    )
+                }
+            )
         }
         if (allGreetings.isNotEmpty()) {
             val initialCandidates = allGreetings.take(3)
@@ -408,6 +442,7 @@ class TalkViewModel(
     fun cancelGeneration() {
         if (_isStreaming.value) {
             llmRunner.cancelGeneration()
+            generationJob?.cancel()
         }
     }
 
@@ -434,7 +469,8 @@ class TalkViewModel(
         existingCharMessage: Message?,
         isContinue: Boolean = false
     ) {
-        viewModelScope.launch {
+        generationJob?.cancel()
+        generationJob = viewModelScope.launch {
             if (!llmRunner.isModelLoaded()) {
                 val errorMsg = Message(
                     chatId = chat.id,
@@ -466,7 +502,7 @@ class TalkViewModel(
                     candidates = emptyList()
                 )
                 repository.saveMessage(newCharMsg)
-                loadMessages(chat.id)
+                _currentMessages.value = _currentMessages.value + newCharMsg
                 newCharMsg
             }
             _streamingMessageId.value = targetMessage.id
@@ -487,6 +523,7 @@ class TalkViewModel(
             )
 
             val textAccumulator = StringBuilder()
+            var lastEmissionTime = 0L
             val finalResult = withContext(Dispatchers.Default) {
                 llmRunner.runStreamingInference(
                     prompt = prompt,
@@ -501,10 +538,16 @@ class TalkViewModel(
                     enableThinking = false, // Talkでは必ずThinking OFF
                     onToken = { token ->
                         textAccumulator.append(token)
-                        _streamingText.value = if (isContinue) {
-                            baseContent + textAccumulator.toString()
-                        } else {
-                            textAccumulator.toString()
+                        val now = System.currentTimeMillis()
+                        // 毎トークンのStateFlow過剰発行によるUIフリーズを防止するため約30ms単位でスロットル更新
+                        if (now - lastEmissionTime >= 30L) {
+                            lastEmissionTime = now
+                            val accText = textAccumulator.toString()
+                            _streamingText.value = if (isContinue) {
+                                baseContent + accText
+                            } else {
+                                accText
+                            }
                         }
                     },
                     onTtft = { ttft ->
@@ -521,7 +564,7 @@ class TalkViewModel(
             }
 
             // 短時間待って確定 (要件41)
-            delay(150)
+            delay(100)
 
             val rawGenerated = if (finalResult.startsWith("ERROR:")) {
                 textAccumulator.toString()
@@ -535,7 +578,10 @@ class TalkViewModel(
                 rawGenerated
             }
 
-            if (isContinue) {
+            // 最終出力を確実に反映（スロットルによる末尾欠落を防止）
+            _streamingText.value = generatedAnswer
+
+            val updatedMessage = if (isContinue) {
                 // Continue: 既存の selectedCandidateIndex の内容を末尾延長して更新
                 val existingCandidates = targetMessage.candidates.toMutableList()
                 val selIdx = targetMessage.selectedCandidateIndex.coerceIn(0, (existingCandidates.size - 1).coerceAtLeast(0))
@@ -546,13 +592,12 @@ class TalkViewModel(
                     existingCandidates.add(generatedAnswer)
                 }
 
-                val updatedMessage = targetMessage.copy(
+                targetMessage.copy(
                     content = generatedAnswer,
                     candidates = existingCandidates,
                     selectedCandidateIndex = selIdx,
                     timestamp = System.currentTimeMillis()
                 )
-                repository.saveMessage(updatedMessage)
             } else {
                 // Candidate management (最大3個, 要件39)
                 val existingCandidates = targetMessage.candidates.toMutableList()
@@ -565,13 +610,25 @@ class TalkViewModel(
                     existingCandidates.add(generatedAnswer)
                 }
 
-                val updatedMessage = targetMessage.copy(
+                targetMessage.copy(
                     content = generatedAnswer,
                     candidates = existingCandidates,
                     selectedCandidateIndex = existingCandidates.size - 1,
                     timestamp = System.currentTimeMillis()
                 )
-                repository.saveMessage(updatedMessage)
+            }
+
+            repository.saveMessage(updatedMessage)
+
+            // インメモリのメッセージリストを先に同期し、ストリーミング解除時のテキスト一瞬空白化（ちらつき）を完全に防止
+            val currentList = _currentMessages.value.toMutableList()
+            val existingIdx = currentList.indexOfFirst { it.id == updatedMessage.id }
+            if (existingIdx != -1) {
+                currentList[existingIdx] = updatedMessage
+                _currentMessages.value = currentList
+            } else {
+                currentList.add(updatedMessage)
+                _currentMessages.value = currentList
             }
 
             _isStreaming.value = false

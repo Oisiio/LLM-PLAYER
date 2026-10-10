@@ -186,4 +186,64 @@ class PromptBuilderTest {
 
         assertFalse(prompt.contains("[ユーザー情報]"))
     }
+
+    @Test
+    fun testResolvePlaceholders_replacesUserAndChar() {
+        val template = "こんにちは、{{user}}！私は{{char}}です。<USER>さん、<CHAR>と呼びます。{{user_description}}"
+        val resolved = PromptBuilder.resolvePlaceholders(
+            template = template,
+            userName = "アリス",
+            charName = "ボブ",
+            userDescription = "読書好き"
+        )
+        assertEquals("こんにちは、アリス！私はボブです。アリスさん、ボブと呼びます。読書好き", resolved)
+    }
+
+    @Test
+    fun testResolvePlaceholders_fallbackWhenUserUnset() {
+        val template = "{{user}}: こんにちは\n{{char}}: やあ"
+        val resolved = PromptBuilder.resolvePlaceholders(
+            template = template,
+            userName = "", // 未設定
+            charName = "ボブ"
+        )
+        assertEquals("User: こんにちは\nボブ: やあ", resolved)
+    }
+
+    @Test
+    fun testPromptBuild_replacesPlaceholders_acrossAllSections() {
+        val character = Character(
+            name = "エレナ",
+            description = "{{user}}の頼れる相棒。",
+            scenario = com.example.data.model.ScenarioData(null, "{{user}}と{{char}}が旅をする。"),
+            systemPrompt = com.example.data.model.SystemPromptData(null, "{{user}}のために全力を尽くすこと。"),
+            exampleDialogue = com.example.data.model.ExampleDialogueData(
+                freeform = "{{user}}: 助けて！\n{{char}}: 任せて！"
+            ),
+            postHistoryInstructions = "{{user}}に敬意を払って応答すること。"
+        )
+
+        val persona = UserPersona(
+            name = "健太",
+            description = "新米冒険者",
+            persona = "勇敢"
+        )
+
+        val prompt = PromptBuilder.buildPrompt(
+            character = character,
+            recentMessages = emptyList(),
+            newUserInput = "出発しよう",
+            userPersona = persona
+        )
+
+        // {{user}} が 健太 に置換されていること
+        assertFalse(prompt.contains("{{user}}"))
+        assertFalse(prompt.contains("{{char}}"))
+        assertTrue(prompt.contains("健太の頼れる相棒。"))
+        assertTrue(prompt.contains("健太とエレナが旅をする。"))
+        assertTrue(prompt.contains("健太のために全力を尽くすこと。"))
+        assertTrue(prompt.contains("健太: 助けて！\nエレナ: 任せて！"))
+        assertTrue(prompt.contains("健太に敬意を払って応答すること。"))
+        assertTrue(prompt.contains("健太: 出発しよう\nエレナ:"))
+    }
 }

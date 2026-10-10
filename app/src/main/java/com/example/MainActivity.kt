@@ -716,6 +716,7 @@ private fun PlayerApp(
             SettingsSubpage.GENERAL -> GeneralSettingsScreen(
               currentViewMode = talkViewModel.viewMode.collectAsState().value,
               currentUserPersona = talkViewModel.userPersona.collectAsState().value,
+              showDebugMetrics = talkViewModel.showDebugMetrics.collectAsState().value,
               onOpenDrawer = { coroutineScope.launch { drawerState.open() } },
               onBack = { settingsSubpage = SettingsSubpage.ROOT },
               onApply = { mode ->
@@ -723,6 +724,9 @@ private fun PlayerApp(
               },
               onSaveUserPersona = { persona ->
                 talkViewModel.repository.saveUserPersona(persona)
+              },
+              onToggleDebugMetrics = { enabled ->
+                talkViewModel.setShowDebugMetrics(enabled)
               }
             )
           }
