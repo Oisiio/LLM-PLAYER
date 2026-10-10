@@ -195,6 +195,35 @@ class CharacterCardImporterTest {
         assertEquals("画像から読み込まれました", char.firstMessage)
     }
 
+    @Test
+    fun testMetadata_nativeJsonRoundTrip() {
+        val original = Character(
+            name = "メタデータ付きキャラ",
+            metadata = com.example.data.model.CharacterMetadata(
+                creator = "作者A",
+                creatorNotes = "制作メモ",
+                characterVersion = "1.2.0",
+                tags = listOf("ファンタジー", "学園")
+            )
+        )
+        val result = CharacterJsonConverter.fromJson(CharacterJsonConverter.toJson(original))
+        assertTrue(result is CharacterJsonConverter.ValidationResult.Success)
+        val imported = (result as CharacterJsonConverter.ValidationResult.Success).character
+        assertEquals(original.metadata, imported.metadata)
+    }
+
+    @Test
+    fun testMetadata_characterCardV2Import() {
+        val json = """{"spec":"chara_card_v2","spec_version":"2.0","data":{"name":"メタキャラ","creator":"作者B","creator_notes":"説明","character_version":"2.1","tags":["SF","学園","SF"]}}"""
+        val result = CharacterCardImporter.importFromJson(json)
+        assertTrue(result is CharacterImportResult.Success)
+        val metadata = (result as CharacterImportResult.Success).character.metadata
+        assertEquals("作者B", metadata.creator)
+        assertEquals("説明", metadata.creatorNotes)
+        assertEquals("2.1", metadata.characterVersion)
+        assertEquals(listOf("SF", "学園"), metadata.tags)
+    }
+
     private fun createTestPngWithTextChunk(keyword: String, text: String): ByteArray {
         val out = ByteArrayOutputStream()
         // PNG Signature
