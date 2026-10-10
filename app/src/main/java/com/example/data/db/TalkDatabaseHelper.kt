@@ -13,7 +13,7 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
 
     companion object {
         const val DATABASE_NAME = "llm_player_talk.db"
-        const val DATABASE_VERSION = 2
+        const val DATABASE_VERSION = 3
 
         // Table Characters
         const val TABLE_CHARACTERS = "characters"
@@ -29,6 +29,7 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
         const val COL_CHAR_SCENARIO = "scenario_json"
         const val COL_CHAR_EXAMPLE_DIALOGUE = "example_dialogue_json"
         const val COL_CHAR_POST_HISTORY_INSTRUCTIONS = "post_history_instructions"
+        const val COL_CHAR_METADATA = "metadata_json"
         const val COL_CHAR_IS_FAVORITE = "is_favorite"
         const val COL_CHAR_LAST_USED_AT = "last_used_at"
 
@@ -105,6 +106,7 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
                 $COL_CHAR_SCENARIO TEXT,
                 $COL_CHAR_EXAMPLE_DIALOGUE TEXT,
                 $COL_CHAR_POST_HISTORY_INSTRUCTIONS TEXT DEFAULT '',
+                $COL_CHAR_METADATA TEXT NOT NULL DEFAULT '{}',
                 $COL_CHAR_IS_FAVORITE INTEGER DEFAULT 0,
                 $COL_CHAR_LAST_USED_AT INTEGER
             )
@@ -158,6 +160,9 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
             db.execSQL("ALTER TABLE $TABLE_CHARACTERS ADD COLUMN $COL_CHAR_ALTERNATE_GREETINGS TEXT DEFAULT ''")
             db.execSQL("ALTER TABLE $TABLE_CHARACTERS ADD COLUMN $COL_CHAR_POST_HISTORY_INSTRUCTIONS TEXT DEFAULT ''")
         }
+        if (oldVersion < 3) {
+            db.execSQL("ALTER TABLE $TABLE_CHARACTERS ADD COLUMN $COL_CHAR_METADATA TEXT NOT NULL DEFAULT '{}'")
+        }
     }
 
     // ==================== Characters CRUD ====================
@@ -177,6 +182,7 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
             put(COL_CHAR_SCENARIO, scenarioToJson(character.scenario))
             put(COL_CHAR_EXAMPLE_DIALOGUE, exampleDialogueToJson(character.exampleDialogue))
             put(COL_CHAR_POST_HISTORY_INSTRUCTIONS, character.postHistoryInstructions)
+            put(COL_CHAR_METADATA, metadataToJson(character.metadata))
             put(COL_CHAR_IS_FAVORITE, if (character.isFavorite) 1 else 0)
             put(COL_CHAR_LAST_USED_AT, character.lastUsedAt)
         }
@@ -426,6 +432,7 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
             scenario = jsonToScenario(c.getString(c.getColumnIndexOrThrow(COL_CHAR_SCENARIO))),
             exampleDialogue = jsonToExampleDialogue(c.getString(c.getColumnIndexOrThrow(COL_CHAR_EXAMPLE_DIALOGUE))),
             postHistoryInstructions = postHistoryInstructions,
+            metadata = jsonToMetadata(c.getString(c.getColumnIndexOrThrow(COL_CHAR_METADATA))),
             isFavorite = c.getInt(c.getColumnIndexOrThrow(COL_CHAR_IS_FAVORITE)) == 1,
             lastUsedAt = c.getLong(c.getColumnIndexOrThrow(COL_CHAR_LAST_USED_AT))
         )
@@ -462,6 +469,38 @@ class TalkDatabaseHelper(context: Context) : SQLiteOpenHelper(context, DATABASE_
     }
 
     private val COL_CHAT_TYPICALP = COL_CHAT_TYPICAL_P
+
+    private fun metadataToJson(metadata: CharacterMetadata): String {
+        val o = JSONObject()
+        o.put("creator", metadata.creator)
+        o.put("creator_notes", metadata.creatorNotes)
+        o.put("character_version", metadata.characterVersion)
+        val tags = JSONArray()
+        metadata.tags.take(50).forEach { tags.put(it.take(50)) }
+        o.put("tags", tags)
+        return o.toString()
+    }
+
+    private fun jsonToMetadata(s: String?): CharacterMetadata {
+        if (s.isNullOrBlank()) return CharacterMetadata()
+        return try {
+            val o = JSONObject(s)
+            val tagsArray = o.optJSONArray("tags")
+            val tags = mutableListOf<String>()
+            if (tagsArray != null) {
+                for (i in 0 until minOf(tagsArray.length(), 50)) {
+                    val tag = tagsArray.optString(i, "").trim()
+                    if (tag.isNotEmpty() && tag.length <= 50 && tag !in tags) tags.add(tag)
+                }
+            }
+            CharacterMetadata(
+                creator = o.optString("creator", "").take(100),
+                creatorNotes = o.optString("creator_notes", "").take(4000),
+                characterVersion = o.optString("character_version", "").take(100),
+                tags = tags
+            )
+        } catch (_: Exception) { CharacterMetadata() }
+    }
 
     private fun personalityToJson(p: PersonalityData): String {
         val o = JSONObject()
